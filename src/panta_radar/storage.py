@@ -129,7 +129,9 @@ def upsert_market(con, m: dict, seen_at: datetime):
         f"INSERT INTO markets({','.join(MARKET_COLS)},first_seen_at,last_seen_at) "
         f"VALUES ({','.join('?' * len(MARKET_COLS))},?,?) "
         f"ON CONFLICT(market_id) DO UPDATE SET "
-        + ",".join(f"{c}=excluded.{c}" for c in MARKET_COLS[1:]) + ",last_seen_at=excluded.last_seen_at",
+        # Panta returns a title for a market only intermittently -> never overwrite a known value with NULL
+        + ",".join(f"{c}=COALESCE(excluded.{c}, markets.{c})" for c in MARKET_COLS[1:])
+        + ",last_seen_at=excluded.last_seen_at",
         vals + [iso(seen_at), iso(seen_at)])
 
 

@@ -20,3 +20,12 @@ def test_snapshot_roundtrip(tmp_path):
     s = load_snapshots(db)
     assert len(s) == 1 and s.iloc[0]["yes_price"] == 0.3 and s.iloc[0]["enriched"] == 1
     assert len(load_trades("A", db)) == 1
+
+
+def test_known_title_not_overwritten_by_null(tmp_path):
+    db = tmp_path / "t.db"
+    ts = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    with connect(db) as con:
+        upsert_market(con, normalize_market({"marketId": "A", "title": "Brent above $104?"}), ts)
+        upsert_market(con, normalize_market({"marketId": "A", "title": ""}), ts)
+        assert con.execute("SELECT title FROM markets").fetchone()[0] == "Brent above $104?"
