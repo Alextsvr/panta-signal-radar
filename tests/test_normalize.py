@@ -86,3 +86,9 @@ def test_resolved_flag_closes_secondary_active():
     from panta_radar.normalize import is_open
     assert not is_open(normalize_market({"marketId": "x", "phase": "secondary", "resolved": True}))
     assert is_open(normalize_market({"marketId": "y", "phase": "secondary", "resolved": False}))
+
+
+def test_display_title_handles_nan_from_pandas():
+    from panta_radar.normalize import display_title
+    nan = float("nan")
+    assert display_title({"title": nan, "category": nan, "market_id": "ABCDEFGH"}) == "[untitled market] ABCD…EFGH"

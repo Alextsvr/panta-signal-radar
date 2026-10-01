@@ -97,11 +97,14 @@ def normalize_market(raw: dict) -> dict | None:
 
 def display_title(m: dict) -> str:
     """Live catalog rows often have an empty title (80/87 on 2026-10-01) -> readable fallback."""
-    t = (m.get("title") or "").strip()
+    def text(v) -> str:  # pandas turns SQL NULL into NaN (a float) -> treat any non-str as missing
+        return v.strip() if isinstance(v, str) else ""
+
+    t = text(m.get("title"))
     if t:
         return t
-    mid = str(m.get("market_id") or "?")
-    return f"[untitled {m.get('category') or 'market'}] {mid[:4]}…{mid[-4:]}"
+    mid = text(m.get("market_id")) or "?"
+    return f"[untitled {text(m.get('category')) or 'market'}] {mid[:4]}…{mid[-4:]}"
 
 
 def normalize_markets(raws: Iterable[dict]) -> list[dict]:
