@@ -30,7 +30,7 @@ def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db
     ts = utcnow()
     errors: list[str] = []
 
-    say(0.02, "Fetching market catalog…")
+    say(0.02, "Fetching market catalog...")
     raw_markets = client.get_markets(max_pages=40)
     if save_raw:
         _save_raw("markets", ts, raw_markets)

@@ -45,7 +45,7 @@ def main() -> int:
         return once(a.max_enrich)
     while True:
         once(a.max_enrich)
-        print(f"sleeping {a.loop} min…")
+        print(f"sleeping {a.loop} min...")
         time.sleep(a.loop * 60)
 
 
