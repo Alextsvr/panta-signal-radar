@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -17,7 +18,7 @@ import importlib  # noqa: E402
 
 import panta_radar  # noqa: E402
 
-for _name in ("config", "normalize", "api", "storage", "signals", "collect"):
+for _name in ("config", "normalize", "api", "storage", "signals", "replay", "collect"):
     _mod = sys.modules.get(f"panta_radar.{_name}")
     if _mod is not None:
         importlib.reload(_mod)
@@ -26,8 +27,9 @@ from panta_radar.api import PantaAPIError, PantaClient  # noqa: E402
 from panta_radar.collect import collect_snapshot  # noqa: E402
 from panta_radar.config import load_settings  # noqa: E402
 from panta_radar.normalize import display_title  # noqa: E402
+from panta_radar.replay import build_replay, prepare_trades, replay_summary  # noqa: E402
 from panta_radar.signals import build_radar  # noqa: E402
-from panta_radar.storage import load_markets, load_runs, load_snapshots, load_trades  # noqa: E402
+from panta_radar.storage import load_all_trades, load_markets, load_runs, load_snapshots, load_trades  # noqa: E402
 
 SERIES = "#2a78d6"
 st.set_page_config(page_title="Panta Signal Radar", page_icon="📡", layout="wide")
@@ -45,7 +47,7 @@ st.markdown("""
 # ------------------------------------------------------------------ data
 @st.cache_data(ttl=30, show_spinner=False)
 def load_all(db: str, db_mtime: float):
-    return load_markets(db), load_snapshots(db), load_runs(db)
+    return load_markets(db), load_snapshots(db), load_runs(db), load_all_trades(db)
 
 
 settings = load_settings()
@@ -93,7 +95,7 @@ with st.sidebar:
         st.info("Test key detected: Panta serves **sandbox fixtures** for `pk_test_` keys. "
                 "Use a `pk_live_` key for the real market catalog.")
 
-markets, snaps, runs = load_all(str(DB), db_mtime())
+markets, snaps, runs, all_trades = load_all(str(DB), db_mtime())
 if snaps.empty:
     st.info("No snapshots yet. Click **Refresh from Panta** in the sidebar "
             "(or run `python scripts/fetch_snapshot.py`).")
@@ -162,7 +164,7 @@ def table(df: pd.DataFrame, cols: list[str], height: int | None = None):
     st.dataframe(show[cols], column_config=cfg, hide_index=True, width="stretch", **kw)
 
 
-tabs = st.tabs(["Overview", "Movers", "Activity", "New Markets", "Market Detail"])
+tabs = st.tabs(["Overview", "Movers", "Activity", "New Markets", "Resolved Replay", "Market Detail"])
 
 # ------------------------------------------------------------------ Overview
 with tabs[0]:
@@ -215,8 +217,51 @@ with tabs[3]:
         table(nw.head(30), ["market", "category", "phase", "start_time", "end_time", "probability",
                             "volume_usdc", "signal"])
 
-# ------------------------------------------------------------------ Detail
+# ------------------------------------------------------------------ Resolved Replay
 with tabs[4]:
+    st.markdown("**Did the money see it coming?** For every resolved market we replay the real Panta trade tape "
+                "up to the close, drop liquidity-seeding trades (same wallet buying YES and NO in equal size within "
+                "seconds), and compare where the directional flow went with the actual outcome.")
+    rep = build_replay(radar, all_trades)
+    if rep.empty:
+        st.info("No resolved markets in the local database yet.")
+    else:
+        sm = replay_summary(rep)
+        k = st.columns(4)
+        k[0].metric("Resolved / closed markets", sm["resolved"])
+        k[1].metric("With known outcome", sm["with_outcome"])
+        k[2].metric("Flow leaned one way", sm["with_flow"],
+                    help="Markets with directional trades whose YES share of flow was outside 45-55%")
+        k[3].metric("Flow matched outcome", f"{sm['flow_correct']} / {sm['with_flow']}" if sm["with_flow"] else "—",
+                    f"{sm['flow_correct'] / sm['with_flow'] * 100:.0f}%" if sm["with_flow"] else None,
+                    delta_color="off")
+        if sm["with_flow"] and sm["with_flow"] < 20:
+            st.caption(f"Small sample ({sm['with_flow']} markets) — read as anecdotes, not statistics.")
+        if all_trades.empty:
+            st.warning("No trade tapes stored yet — run `backfill.bat` (or `scripts/backfill_trades.py`).")
+        show = rep.copy()
+        show["lean"] = show["yes_lean"] * 100
+        show["last_px"] = show["last_implied_yes"] * 100
+        show["verdict"] = show["flow_correct"].map({True: "✓ called it", False: "✗ wrong"}).fillna("—")
+        st.dataframe(show[["market", "category", "outcome", "directional_trades", "seed_trades", "wallets",
+                           "lean", "last_px", "verdict", "volume_usdc", "replay"]],
+                     hide_index=True, width="stretch",
+                     column_config={
+                         "market": st.column_config.TextColumn("Market", width="large"),
+                         "category": "Category", "outcome": "Outcome",
+                         "directional_trades": st.column_config.NumberColumn("Bets", format="%d"),
+                         "seed_trades": st.column_config.NumberColumn("Seed trades", format="%d"),
+                         "wallets": st.column_config.NumberColumn("Wallets", format="%d"),
+                         "lean": st.column_config.ProgressColumn("Flow → YES", min_value=0, max_value=100,
+                                                                 format="%.0f%%"),
+                         "last_px": st.column_config.NumberColumn("Last trade YES", format="%.0f%%"),
+                         "verdict": "Flow vs outcome",
+                         "volume_usdc": st.column_config.NumberColumn("Volume (USDC)", format="%.2f"),
+                         "replay": st.column_config.TextColumn("Replay", width="large"),
+                     })
+
+# ------------------------------------------------------------------ Detail
+with tabs[5]:
     opts = view if not view.empty else radar
     labels = {r.market_id: f"{r.market}  ·  {r.category or '—'}" for r in opts.itertuples()}
     mid = st.selectbox("Market", list(labels), format_func=labels.get)
@@ -257,16 +302,41 @@ with tabs[4]:
                           xaxis=dict(gridcolor="rgba(128,128,128,.15)"))
         st.plotly_chart(fig, width="stretch")
 
+    tt = prepare_trades(all_trades[all_trades["market_id"] == mid]) if not all_trades.empty else pd.DataFrame()
+    px = tt.dropna(subset=["implied_yes"]) if not tt.empty else tt
+    px = px[~px["is_seed"]] if not px.empty else px
+    st.markdown("**Trade-implied YES price — reconstructed from the trade tape** (USDC paid ÷ shares)")
+    if px.empty:
+        st.caption("No priced directional trades for this market.")
+    else:
+        fig2 = go.Figure(go.Scatter(
+            x=px["block_time"], y=px["implied_yes"] * 100, mode="markers+lines",
+            line=dict(color=SERIES, width=1, dash="dot"), marker=dict(size=9, color=SERIES),
+            customdata=np.stack([px["direction"].str.upper(), px["usdc_amount"], px["shares"]], axis=-1),
+            hovertemplate="%{x|%Y-%m-%d %H:%M} UTC<br>YES %{y:.1f}%<br>bought %{customdata[0]} · "
+                          "%{customdata[1]:.2f} USDC for %{customdata[2]:.2f} shares<extra></extra>"))
+        if pd.notna(r.get("end_time")):
+            fig2.add_vline(x=r["end_time"], line=dict(color="rgba(128,128,128,.6)", dash="dash"))
+        fig2.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10), yaxis_title="YES %",
+                           yaxis=dict(range=[0, 100], gridcolor="rgba(128,128,128,.15)"),
+                           xaxis=dict(gridcolor="rgba(128,128,128,.15)"))
+        st.plotly_chart(fig2, width="stretch")
+
     st.markdown("**Recent trades (Panta trade tape, stored locally)**")
     tr = load_trades(mid)
     if tr.empty:
         st.caption("No trades returned by Panta for this market yet.")
     else:
-        tr["block_time"] = pd.to_datetime(tr["block_time"], utc=True)
-        st.dataframe(tr[["block_time", "side", "yes_amount", "no_amount", "fee_paid", "is_primary", "wallet"]],
+        tr = prepare_trades(tr).sort_values("block_time", ascending=False)
+        tr["implied_yes"] = tr["implied_yes"] * 100
+        st.dataframe(tr[["block_time", "direction", "shares", "usdc_amount", "implied_yes", "is_seed", "wallet"]],
                      hide_index=True, width="stretch",
                      column_config={"block_time": st.column_config.DatetimeColumn("Time (UTC)",
-                                                                                   format="YYYY-MM-DD HH:mm:ss")})
+                                                                                   format="YYYY-MM-DD HH:mm:ss"),
+                                    "direction": "Side", "shares": st.column_config.NumberColumn("Shares", format="%.2f"),
+                                    "usdc_amount": st.column_config.NumberColumn("USDC", format="%.2f"),
+                                    "implied_yes": st.column_config.NumberColumn("Implied YES", format="%.1f%%"),
+                                    "is_seed": st.column_config.CheckboxColumn("Liquidity seed")})
 
 st.divider()
 st.markdown('<div class="powered">Powered by <b>Panta</b> · data from the Panta Markets API · '

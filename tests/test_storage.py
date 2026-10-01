@@ -15,7 +15,7 @@ def test_snapshot_roundtrip(tmp_path):
         upsert_market(con, m, ts)
         insert_snapshot(con, rid, ts, m, {"trades_24h": 1})
         assert insert_trades(con, rid, [t]) == 1
-        assert insert_trades(con, rid, [t]) == 0  # de-duplicated
+        assert insert_trades(con, rid, [t]) == 0  # de-duplicated (upsert)
         finish_run(con, rid, 1, 1, 3, [])
     s = load_snapshots(db)
     assert len(s) == 1 and s.iloc[0]["yes_price"] == 0.3 and s.iloc[0]["enriched"] == 1

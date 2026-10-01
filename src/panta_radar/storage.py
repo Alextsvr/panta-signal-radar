@@ -144,13 +144,23 @@ def insert_snapshot(con, run_id: int, ts: datetime, m: dict, activity: dict | No
         [run_id, iso(ts), m["market_id"], 1 if activity is not None else 0] + vals)
 
 
-def insert_trades(con, run_id: int, trades: list[dict]) -> int:
-    before = con.total_changes
+def insert_trades(con, run_id: int | None, trades: list[dict]) -> int:
+    """Upsert trades; returns how many were new. Re-fetched rows refresh their amounts
+    (needed after the base-unit fix for yesAmount/noAmount)."""
+    if not trades:
+        return 0
+    ids = [t["trade_id"] for t in trades]
+    known = set()
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        known |= {r[0] for r in con.execute(
+            f"SELECT trade_id FROM trades WHERE trade_id IN ({','.join('?' * len(chunk))})", chunk)}
+    upd = ",".join(f"{c}=excluded.{c}" for c in TRADE_COLS[1:])
     con.executemany(
-        f"INSERT OR IGNORE INTO trades({','.join(TRADE_COLS)},first_seen_run) "
-        f"VALUES ({','.join('?' * len(TRADE_COLS))},?)",
+        f"INSERT INTO trades({','.join(TRADE_COLS)},first_seen_run) "
+        f"VALUES ({','.join('?' * len(TRADE_COLS))},?) ON CONFLICT(trade_id) DO UPDATE SET {upd}",
         [[iso(t.get(c)) for c in TRADE_COLS] + [run_id] for t in trades])
-    return con.total_changes - before
+    return len(set(ids) - known)
 
 
 # ------------------------------------------------------------------ readers
@@ -173,6 +183,11 @@ def load_snapshots(db_path=None, since_iso: str | None = None) -> pd.DataFrame:
         if since_iso:
             return _df(con, "SELECT * FROM snapshots WHERE snapshot_ts >= ? ORDER BY snapshot_ts", (since_iso,))
         return _df(con, "SELECT * FROM snapshots ORDER BY snapshot_ts")
+
+
+def load_all_trades(db_path=None) -> pd.DataFrame:
+    with connect(db_path) as con:
+        return _df(con, "SELECT * FROM trades ORDER BY market_id, block_time")
 
 
 def load_trades(market_id: str, db_path=None, limit: int = 500) -> pd.DataFrame:

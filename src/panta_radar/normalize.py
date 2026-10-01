@@ -121,10 +121,21 @@ def is_open(m: dict) -> bool:
     return m.get("phase") in OPEN_PHASES and not m.get("resolved")
 
 
+def to_shares(v: Any) -> float | None:
+    """Share amounts on the live trade tape are 1e6 base units ("19677335" = 19.68 shares),
+    although the docs describe human decimals ("10.00"). Decimal strings are taken as-is."""
+    f = to_float(v)
+    if f is None:
+        return None
+    if isinstance(v, str) and "." in v:
+        return f
+    return f / 1_000_000
+
+
 def normalize_trade(raw: dict, market_id: str | None = None) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    yes, no = to_float(raw.get("yesAmount")), to_float(raw.get("noAmount"))
+    yes, no = to_shares(raw.get("yesAmount")), to_shares(raw.get("noAmount"))
     side = raw.get("side")
     if not side and (yes or no):
         side = "yes" if (yes or 0) >= (no or 0) else "no"
@@ -142,7 +153,7 @@ def normalize_trade(raw: dict, market_id: str | None = None) -> dict | None:
         "shares": (yes or 0) + (no or 0) if (yes is not None or no is not None) else None,
         "fee_paid": to_float(raw.get("feePaid")),
         "usdc_amount": usdc(raw.get("amountUsdc"), raw.get("amountUsdcBase")),
-        "side": side,
+        "side": side.lower() if isinstance(side, str) else side,
         "kind": raw.get("kind"),
         "block_time": bt,
         "signature": raw.get("signature"),
