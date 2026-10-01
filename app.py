@@ -61,7 +61,7 @@ with st.sidebar:
     max_enrich = st.slider("Markets to enrich per refresh", 5, 60, 40, 5,
                            help="Open markets get a detail call (spot price) and a trade-tape call. "
                                 "Panta read limit ≈120 requests/min.")
-    if st.button("🔄 Refresh from Panta", type="primary", use_container_width=True,
+    if st.button("🔄 Refresh from Panta", type="primary", width="stretch",
                  disabled=not settings.api_key):
         bar = st.progress(0.0, text="Starting…")
         try:
@@ -134,7 +134,8 @@ def table(df: pd.DataFrame, cols: list[str], height: int | None = None):
         "start_time": st.column_config.DatetimeColumn("Opened (UTC)", format="YYYY-MM-DD HH:mm"),
         "end_time": st.column_config.DatetimeColumn("Ends (UTC)", format="YYYY-MM-DD HH:mm"),
     }
-    st.dataframe(show[cols], column_config=cfg, hide_index=True, use_container_width=True, height=height)
+    kw = {"height": height} if height else {}
+    st.dataframe(show[cols], column_config=cfg, hide_index=True, width="stretch", **kw)
 
 
 tabs = st.tabs(["Overview", "Movers", "Activity", "New Markets", "Market Detail"])
@@ -225,7 +226,7 @@ with tabs[4]:
         fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), yaxis_title="YES %",
                           yaxis=dict(range=[0, 100], gridcolor="rgba(128,128,128,.15)"),
                           xaxis=dict(gridcolor="rgba(128,128,128,.15)"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     st.markdown("**Recent trades (Panta trade tape, stored locally)**")
     tr = load_trades(mid)
@@ -234,7 +235,7 @@ with tabs[4]:
     else:
         tr["block_time"] = pd.to_datetime(tr["block_time"], utc=True)
         st.dataframe(tr[["block_time", "side", "yes_amount", "no_amount", "fee_paid", "is_primary", "wallet"]],
-                     hide_index=True, use_container_width=True,
+                     hide_index=True, width="stretch",
                      column_config={"block_time": st.column_config.DatetimeColumn("Time (UTC)",
                                                                                    format="YYYY-MM-DD HH:mm:ss")})
 
