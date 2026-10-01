@@ -1,0 +1,43 @@
+name: collect-snapshots
+# 24/7 read-only collection from the Panta API into the `data` branch (JSONL).
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # GitHub may delay scheduled runs; that is fine for snapshots
+  workflow_dispatch:
+concurrency:
+  group: collect
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet requests python-dotenv pandas
+      - name: Prepare data branch worktree
+        run: |
+          git config --global user.name "panta-radar-bot"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git fetch --quiet origin data:data
+            git worktree add datastore data
+          else
+            git worktree add --orphan -b data datastore
+          fi
+      - name: Collect one snapshot
+        env:
+          PANTA_API_KEY: ${{ secrets.PANTA_API_KEY }}
+        run: python scripts/collect_ci.py --out datastore
+      - name: Commit and push
+        working-directory: datastore
+        run: |
+          git add -A
+          git diff --cached --quiet && { echo "nothing to commit"; exit 0; }
+          git commit --quiet -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          for i in 1 2 3; do git push --quiet origin data && exit 0; git pull --quiet --rebase origin data; done
+          exit 1
