@@ -226,6 +226,9 @@ with tabs[4]:
     if rep.empty:
         st.info("No resolved markets in the local database yet.")
     else:
+        min_bets = st.slider("Minimum directional trades per market", 1, 20, 1,
+                             help="Thin markets are noisy — raise this to look only at markets with real flow.")
+        rep = rep[(rep["directional_trades"] >= min_bets) | (min_bets <= 1)]
         sm = replay_summary(rep)
         k = st.columns(4)
         k[0].metric("Resolved / closed markets", sm["resolved"])
@@ -235,8 +238,14 @@ with tabs[4]:
         k[3].metric("Flow matched outcome", f"{sm['flow_correct']} / {sm['with_flow']}" if sm["with_flow"] else "—",
                     f"{sm['flow_correct'] / sm['with_flow'] * 100:.0f}%" if sm["with_flow"] else None,
                     delta_color="off")
-        if sm["with_flow"] and sm["with_flow"] < 20:
-            st.caption(f"Small sample ({sm['with_flow']} markets) — read as anecdotes, not statistics.")
+        if sm["with_flow"]:
+            st.caption(
+                f"Baseline for honesty: always guessing **{sm['baseline_side']}** on the same {sm['with_flow']} "
+                f"markets would be right {sm['baseline_correct']} times "
+                f"({sm['baseline_correct'] / sm['with_flow'] * 100:.0f}%). Outcomes overall: "
+                + ", ".join(f"{k} {v}" for k, v in sm["outcomes"].items())
+                + ". Flow is weighted by USDC where the tape has it, otherwise by shares (shares overweight the "
+                  "cheaper side). Small sample — read as evidence, not proof.")
         if all_trades.empty:
             st.warning("No trade tapes stored yet — run `backfill.bat` (or `scripts/backfill_trades.py`).")
         show = rep.copy()

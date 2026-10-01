@@ -49,8 +49,10 @@ src/panta_radar/
   collect.py                one refresh: catalog → enrich open markets → snapshot
   storage.py                SQLite: runs, markets, snapshots, trades
   signals.py                deterministic signal engine + explanations
+  replay.py                 seed detection, trade-implied prices, Resolved Replay
 scripts/inspect_api.py      first-contact schema inspection
 scripts/fetch_snapshot.py   one snapshot or --loop N minutes
+scripts/backfill_trades.py  trade tapes + detail rows for every market (feeds Resolved Replay)
 tests/                      normalization, deltas, scoring, missing values, first snapshot, storage
 ```
 
@@ -70,6 +72,20 @@ Scales are calibrated on the live catalog (Oct 2026: open-market volume 0–390 
 re-inflated when history is short, so a first-run score is honestly low. Labels: **TRENDING** (move and
 activity/flow both ≥0.3), otherwise the strongest contributor — **MOVER, ACTIVE, SURGE, NEW, CLOSING SOON**, or **QUIET**.
 On the very first snapshot the UI says *"Historical signal data is accumulating."*
+
+## Resolved Replay — "did the money see it coming?"
+For every resolved market Signal Radar replays the real Panta trade tape up to the close and compares the
+directional order flow with the actual outcome.
+- **Liquidity seeds are removed**: the same wallet buying YES and NO in near-equal size within seconds is
+  market making, not a bet (128 of 452 trades on 2026-10-01).
+- **Trade-implied price** = USDC paid ÷ shares received (when the tape carries `amountUsdc`).
+- **Flow lean** = share of directional flow that went to YES (USDC-weighted where available, else shares).
+- **Honest baseline**: every result is shown next to "always guess the more common outcome".
+
+First run on the live catalog (80 resolved markets, 452 trades): flow leaned one way in 61 markets and matched
+the outcome in 38 (62%) — no better than the 64% "always NO" baseline. Restricted to markets with ≥5
+directional trades it matched 12 of 16 (75% vs 69% baseline), and 5 of 5 with ≥10. Promising, but a tiny
+sample — the product shows it as evidence, not proof.
 
 ## Screenshots
 _To be added from a live run._

@@ -75,7 +75,21 @@ Write endpoints (`/markets/create/*`, `/trades/` POST, `/claim/*`, `/account/key
 | `primaryYesPrice/NoPrice`, `secondaryYesPrice/NoPrice` | `"0.50"` / `null` | phase-specific prices |
 | `totalVolumeUsdc`, `volumeUsdcBase`, `creationFee`, `oracle` | — | in playground types, **not present** in observed response |
 
-## Trade object [docs; not yet observed — sandbox tape is empty]
+## Trade object **[verified live 2026-10-01, 452 rows]**
+Verbatim: `{"id": "c80019f2-…", "marketId": "6yEB…", "wallet": "CzYe…", "isPrimary": true, "yesAmount": 1924115.0,
+"noAmount": 0.0, "feePaid": 0.0, "blockTime": 1790778938, "signature": "2ziK…", "quoteAsset": "usdc", "kind": "buy",
+"side": "yes", "shares": "1.924115", "sharesBase": "1924115", "amountUsdc": "1.00", "amountUsdcBase": "1000000"}`
+- **`yesAmount`/`noAmount` are floats in 1e6 base units** (docs say human decimals). `shares` is the human string.
+- `amountUsdc` is filled on only 18/452 rows (user trades via the app); null for seeding/other flows.
+- `kind`: always `buy` so far; `side`: yes 188 / no 264; `isPrimary`: true 445 / false 7. `feePaid` 0.0 everywhere.
+- Per-market tape: 0–38 rows (limit 200 never hit).
+- Market creators/makers buy YES and NO in near-equal size seconds apart (liquidity seeding).
+- Detail endpoint adds: `creatorAddress, oracle (source URLs), transactionHash, votes, creationFee, primaryVolume,
+  secondaryVolume, tradingFeeAccrued, isGraduated, graduationFailureReason, sentToUma, hermesResponse, programId,
+  creatorTwitterHandle, creatorInstagramHandle`, and often a `title` missing from the list row.
+- Catalog status changes in place: at 10:08 UTC all 36 `secondary_active` rows flipped to `phase: resolved`.
+
+### Docs version (for reference)
 `id, marketId, wallet, isPrimary, yesAmount, noAmount (share quantities, decimal strings), feePaid (USDC), blockTime (Unix s), signature, quoteAsset`.
 Playground types also allow `kind, side, amountUsdc, amountUsdcBase`.
 

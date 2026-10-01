@@ -127,10 +127,15 @@ def build_replay(radar: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
 
 def replay_summary(rep: pd.DataFrame) -> dict:
     if rep is None or rep.empty:
-        return {"resolved": 0, "with_outcome": 0, "with_flow": 0, "flow_correct": 0, "price_calls": 0,
-                "price_correct": 0}
+        return {"resolved": 0, "with_outcome": 0, "with_flow": 0, "flow_correct": 0, "baseline_correct": 0,
+                "baseline_side": None, "outcomes": {}, "price_calls": 0, "price_correct": 0}
     called = rep[rep["flow_correct"].notna()]
     pc = rep[rep["price_correct"].notna()]
+    # honest baseline: always guessing the more common outcome on the same markets
+    base_n = int(called["outcome"].value_counts().max()) if len(called) else 0
+    base_side = called["outcome"].value_counts().idxmax() if len(called) else None
     return {"resolved": int(len(rep)), "with_outcome": int(rep["outcome"].notna().sum()),
             "with_flow": int(len(called)), "flow_correct": int(called["flow_correct"].astype(bool).sum()),
+            "baseline_correct": base_n, "baseline_side": base_side,
+            "outcomes": rep["outcome"].value_counts().to_dict(),
             "price_calls": int(len(pc)), "price_correct": int(pc["price_correct"].astype(bool).sum())}

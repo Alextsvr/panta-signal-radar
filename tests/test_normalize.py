@@ -76,7 +76,7 @@ LIVE_ROW = {"marketId": "6yEBmxJu2oWdubFVKZshVVUpLLsXd61csSfmf8y4Qtwd", "categor
 def test_live_row():
     from panta_radar.normalize import display_title
     m = normalize_market(LIVE_ROW)
-    assert m["title"] is None and display_title(m) == "[untitled pop-culture] 6yEB…Qtwd"
+    assert m["title"] is None and display_title(m) == "[untitled pop-culture] 6yEB..Qtwd"
     assert m["start_time"].year == 2026 and m["volume_usdc"] == 245.704615
     assert m["total_volume_usdc"] == 250.704615
     assert m["api_price_source"] == "primary_last" and m["valuation_status"] == "complete"
@@ -91,4 +91,14 @@ def test_resolved_flag_closes_secondary_active():
 def test_display_title_handles_nan_from_pandas():
     from panta_radar.normalize import display_title
     nan = float("nan")
-    assert display_title({"title": nan, "category": nan, "market_id": "ABCDEFGH"}) == "[untitled market] ABCD…EFGH"
+    assert display_title({"title": nan, "category": nan, "market_id": "ABCDEFGH"}) == "[untitled market] ABCD..EFGH"
+
+
+def test_real_live_trade_row():
+    # verbatim shape from GET /markets/{id}/trades/ (live, 2026-10-01)
+    raw = {"id": "c80019f2", "marketId": "6yEB", "wallet": "CzYe", "isPrimary": True, "yesAmount": 1924115.0,
+           "noAmount": 0.0, "feePaid": 0.0, "blockTime": 1790778938, "signature": "2ziK", "quoteAsset": "usdc",
+           "kind": "buy", "side": "yes", "shares": "1.924115", "sharesBase": "1924115", "amountUsdc": "1.00",
+           "amountUsdcBase": "1000000"}
+    t = normalize_trade(raw)
+    assert t["yes_amount"] == 1.924115 and t["shares"] == 1.924115 and t["usdc_amount"] == 1.0

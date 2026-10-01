@@ -104,7 +104,7 @@ def display_title(m: dict) -> str:
     if t:
         return t
     mid = text(m.get("market_id")) or "?"
-    return f"[untitled {text(m.get('category')) or 'market'}] {mid[:4]}…{mid[-4:]}"
+    return f"[untitled {text(m.get('category')) or 'market'}] {mid[:4]}..{mid[-4:]}"
 
 
 def normalize_markets(raws: Iterable[dict]) -> list[dict]:
@@ -150,7 +150,9 @@ def normalize_trade(raw: dict, market_id: str | None = None) -> dict | None:
         "is_primary": raw.get("isPrimary") if isinstance(raw.get("isPrimary"), bool) else None,
         "yes_amount": yes,
         "no_amount": no,
-        "shares": (yes or 0) + (no or 0) if (yes is not None or no is not None) else None,
+        # live rows carry a human "shares" string ("1.924115") next to base-unit yes/noAmount
+        "shares": to_float(raw.get("shares")) if to_float(raw.get("shares")) is not None
+        else ((yes or 0) + (no or 0) if (yes is not None or no is not None) else None),
         "fee_paid": to_float(raw.get("feePaid")),
         "usdc_amount": usdc(raw.get("amountUsdc"), raw.get("amountUsdcBase")),
         "side": side.lower() if isinstance(side, str) else side,
