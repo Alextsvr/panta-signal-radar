@@ -11,6 +11,17 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
+# Streamlit re-executes app.py on every rerun but keeps imported modules cached;
+# reload our own package so code changes under src/ take effect on a browser refresh.
+import importlib  # noqa: E402
+
+import panta_radar  # noqa: E402
+
+for _name in ("config", "normalize", "api", "storage", "signals", "collect"):
+    _mod = sys.modules.get(f"panta_radar.{_name}")
+    if _mod is not None:
+        importlib.reload(_mod)
+
 from panta_radar.api import PantaAPIError, PantaClient  # noqa: E402
 from panta_radar.collect import collect_snapshot  # noqa: E402
 from panta_radar.config import load_settings  # noqa: E402
