@@ -130,7 +130,10 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
     if not math.isnan(t24) and t24 > 0:
         w = _num(r.get("wallets_24h"))
         who = f" from {int(w)} wallets" if not math.isnan(w) and w > 0 else ""
-        reasons.append(f"{'≥' if capped else ''}{int(t24)} trades in the last 24h{who}")
+        reasons.append(f"{'≥' if capped else ''}{int(t24)} crowd trades in the last 24h{who}")
+        ys = _num(r.get("crowd_yes_share_24h"))
+        if not math.isnan(ys):
+            reasons.append(f"{ys:.0%} of crowd shares bought YES")
 
     accel = math.nan
     if not math.isnan(t24) and t24 >= cfg.min_trades_for_accel and not math.isnan(t1):
@@ -150,6 +153,9 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
         reasons.append(f"New market: opened {fmt_dur(age_h)} ago")
     if closing:
         reasons.append(f"Closing soon: ends in {fmt_dur(left_h)}")
+    mm24 = _num(r.get("mm_prints_24h"))
+    if is_open and not math.isnan(mm24) and mm24 > 0:
+        reasons.append(f"{int(mm24)} market-maker prints ignored")
     if is_open and (math.isnan(t24) or t24 == 0):
         lt = r.get("last_trade_at")
         if lt is not None and not pd.isna(lt):
@@ -187,9 +193,36 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
             "attention_score": score, "signal": label, "reason": " · ".join(reasons)}
 
 
+def crowd_activity(trades: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    """Per-market activity counted on CROWD trades only (no seed pairs, no market-maker wallets)."""
+    from .replay import prepare_trades, tag_crowd  # local import keeps signals importable standalone
+    cols = ["market_id", "trades_24h", "trades_1h", "wallets_24h", "last_trade_at", "crowd_yes_share_24h",
+            "tape_trades_24h", "mm_prints_24h"]
+    if trades is None or trades.empty:
+        return pd.DataFrame(columns=cols)
+    t = tag_crowd(prepare_trades(trades))
+    age_h = (pd.Timestamp(now) - t["block_time"]).dt.total_seconds() / 3600
+    t24 = t[(age_h >= 0) & (age_h <= 24)]
+    out = []
+    for mid, g in t.groupby("market_id"):
+        g24 = t24[t24["market_id"] == mid]
+        c24 = g24[g24["is_crowd"]]
+        c = g[g["is_crowd"]]
+        sh = c24.groupby("direction")["shares"].sum()
+        tot = sh.sum()
+        out.append({"market_id": mid, "trades_24h": len(c24),
+                    "trades_1h": int((age_h.loc[c24.index] <= 1).sum()),
+                    "wallets_24h": c24["wallet"].nunique(),
+                    "last_trade_at": c["block_time"].max() if len(c) else pd.NaT,
+                    "crowd_yes_share_24h": float(sh.get("yes", 0) / tot) if tot else math.nan,
+                    "tape_trades_24h": len(g24), "mm_prints_24h": int((g24["is_mm"] | g24["is_seed"]).sum())})
+    return pd.DataFrame(out, columns=cols)
+
+
 def build_radar(markets: pd.DataFrame, snaps: pd.DataFrame, now: datetime | None = None,
-                cfg: ScoreConfig = DEFAULT) -> pd.DataFrame:
-    """Join catalog + latest snapshot + reference snapshot, score every market, rank."""
+                cfg: ScoreConfig = DEFAULT, trades: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Join catalog + latest snapshot + reference snapshot, score every market, rank.
+    With `trades`, activity is recomputed on crowd trades only (market makers and seeds excluded)."""
     now = now or datetime.now(timezone.utc)
     if markets is None or markets.empty or snaps is None or snaps.empty:
         return pd.DataFrame()
@@ -199,6 +232,13 @@ def build_radar(markets: pd.DataFrame, snaps: pd.DataFrame, now: datetime | None
     m = markets.drop(columns=[c for c in ("phase", "status") if c in markets.columns])
     df = latest.merge(m, on="market_id", how="left").merge(
         latest_and_reference(snaps, cfg.window_h), on="market_id", how="left")
+    if trades is not None and not trades.empty:
+        act = crowd_activity(trades, now)
+        df = df.drop(columns=[c for c in act.columns if c != "market_id" and c in df.columns]) \
+               .merge(act, on="market_id", how="left")
+        for c in ("trades_24h", "trades_1h", "wallets_24h", "tape_trades_24h", "mm_prints_24h"):
+            df[c] = df[c].fillna(0)
+        df["tape_capped"] = False
     for c in ("start_time", "end_time", "resolution_time", "ref_ts", "last_trade_at", "first_seen_at"):
         if c in df.columns:
             df[c] = _ts(df[c])

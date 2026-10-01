@@ -1,9 +1,12 @@
 # Panta Signal Radar
 
-**Real-time intelligence for prediction markets.**
-Panta answers *"What markets exist?"* — Signal Radar answers **"What changed, what matters, and where should I look first?"**
+**Honest signals for prediction markets.**
+Most dashboards read Panta's trade tape as if every print were a bet. On the live tape, **one market-maker wallet
+holds ~81% of all shares** (YES+NO seed pairs and one-sided liquidity across 68 of 87 markets). Signal Radar
+separates the market maker from the crowd, scores markets on crowd behaviour only, and shows every claim next to
+an honest baseline.
 
-> Powered by **Panta** · built for the Colosseum Crypto World's Fair and the Panta API Sidetrack.
+> Powered by **Panta** · built for the Colosseum Crypto World's Fair and the Panta API Sidetrack · MIT licensed.
 
 ## What it is
 An attention / intelligence layer on top of the [Panta Markets API](https://docs.panta.market/).
@@ -73,6 +76,11 @@ re-inflated when history is short, so a first-run score is honestly low. Labels:
 activity/flow both ≥0.3), otherwise the strongest contributor — **MOVER, ACTIVE, SURGE, NEW, CLOSING SOON**, or **QUIET**.
 On the very first snapshot the UI says *"Historical signal data is accumulating."*
 
+## Who's trading — market maker vs crowd
+Each wallet on the tape gets an explainable role. A wallet is a **market maker** when ≥30% of its prints are
+YES+NO seed pairs across ≥5 markets, or when it holds ≥25% of all shares across ≥10 markets. Its prints are
+excluded from crowd activity, crowd flow and the Attention Score.
+
 ## Resolved Replay — "did the money see it coming?"
 For every resolved market Signal Radar replays the real Panta trade tape up to the close and compares the
 directional order flow with the actual outcome.
@@ -82,13 +90,25 @@ directional order flow with the actual outcome.
 - **Flow lean** = share of directional flow that went to YES (USDC-weighted where available, else shares).
 - **Honest baseline**: every result is shown next to "always guess the more common outcome".
 
-First run on the live catalog (80 resolved markets, 452 trades): flow leaned one way in 61 markets and matched
-the outcome in 38 (62%) — no better than the 64% "always NO" baseline. Restricted to markets with ≥5
-directional trades it matched 12 of 16 (75% vs 69% baseline), and 5 of 5 with ≥10. Promising, but a tiny
-sample — the product shows it as evidence, not proof.
+First run on the live catalog (80 resolved markets, 452 trades, 2026-10-01):
+
+| Reading | Correct | |
+|---|---|---|
+| Naive tape (seed pairs removed only) | 38 / 61 | 62% — and 12/16 (75%) on markets with ≥5 trades |
+| **Crowd only** (market maker removed) | **27 / 44** | **61%** |
+| Baseline "always NO" on the same markets | 27 / 44 | 61% |
+
+The apparent edge of the naive reading came from the market maker's systematic NO buying, not from the crowd.
+Honest conclusion today: Panta's crowd flow does not yet beat the base rate — Signal Radar says so instead of
+selling a fake win rate, and keeps measuring as the dataset grows.
 
 ## Screenshots
 _To be added from a live run._
+
+## 24/7 open dataset
+A GitHub Actions workflow (`.github/workflows/collect.yml`) takes a read-only snapshot every 15 minutes and appends
+it as JSONL to the `data` branch — an open, growing history of Panta prices, volumes and trades that the API itself
+does not provide. `python scripts/sync_data.py` imports it into the local SQLite.
 
 ## Run locally (Windows)
 Double-click `setup_and_inspect.bat` once (creates `.venv`, installs deps, inspects the API), then `run_radar.bat`

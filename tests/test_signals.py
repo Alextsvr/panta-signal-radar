@@ -63,7 +63,7 @@ def test_score_bounds_and_explanation():
     out = score_row(row, NOW)
     assert out["attention_score"] == 100
     assert out["signal"] == "TRENDING"
-    assert "≥5000 trades" in out["reason"]
+    assert "≥5000 crowd trades" in out["reason"]
 
 
 def test_missing_values_do_not_crash_and_resolved_unscored():
@@ -91,3 +91,21 @@ def test_closing_soon_and_last_trade_reason():
     assert out["signal"] == "CLOSING SOON" and out["attention_score"] == 10
     assert "ends in 7.5h" in out["reason"] and "Last trade 5d ago" in out["reason"]
     assert "indicative" in out["reason"]
+
+
+def test_crowd_activity_excludes_market_maker_and_seeds():
+    from panta_radar.signals import crowd_activity
+    ts = lambda h: (NOW - timedelta(hours=h)).isoformat()
+    rows = []
+    # market maker: seed pairs + one-sided prints across 6 markets
+    for i in range(6):
+        rows += [("MM", f"M{i}", 100, 0, None, ts(2)), ("MM", f"M{i}", 0, 100, None, ts(2) )]
+    rows += [("MM", "M0", 0, 500, None, ts(3)),
+             ("alice", "M0", 20, 0, 10.0, ts(0.5)), ("bob", "M0", 0, 10, 5.0, ts(5))]
+    trades = pd.DataFrame([{"trade_id": str(i), "wallet": w, "market_id": m, "yes_amount": y, "no_amount": n,
+                            "shares": y + n, "usdc_amount": u, "block_time": t}
+                           for i, (w, m, y, n, u, t) in enumerate(rows)])
+    a = crowd_activity(trades, NOW).set_index("market_id").loc["M0"]
+    assert a["trades_24h"] == 2 and a["trades_1h"] == 1 and a["wallets_24h"] == 2
+    assert a["tape_trades_24h"] == 5 and a["mm_prints_24h"] == 3
+    assert round(a["crowd_yes_share_24h"], 3) == round(20 / 30, 3)

@@ -27,7 +27,7 @@ from panta_radar.api import PantaAPIError, PantaClient  # noqa: E402
 from panta_radar.collect import collect_snapshot  # noqa: E402
 from panta_radar.config import load_settings  # noqa: E402
 from panta_radar.normalize import display_title  # noqa: E402
-from panta_radar.replay import build_replay, prepare_trades, replay_summary  # noqa: E402
+from panta_radar.replay import build_replay, prepare_trades, replay_summary, tag_crowd, wallet_profiles  # noqa: E402
 from panta_radar.signals import build_radar  # noqa: E402
 from panta_radar.storage import load_all_trades, load_markets, load_runs, load_snapshots, load_trades  # noqa: E402
 
@@ -102,7 +102,9 @@ if snaps.empty:
     st.stop()
 
 now = datetime.now(timezone.utc)
-radar = build_radar(markets, snaps, now=now)
+radar = build_radar(markets, snaps, now=now, trades=all_trades)
+prepared = tag_crowd(prepare_trades(all_trades)) if not all_trades.empty else pd.DataFrame()
+profiles = wallet_profiles(prepared) if not prepared.empty else pd.DataFrame()
 radar["market"] = [display_title(r) for r in radar.to_dict("records")]
 radar["ends_in"] = [("ended" if h <= 0 else f"in {h:.0f}h" if h < 48 else f"in {h / 24:.0f}d") if pd.notna(h) else "—"
                     for h in radar["hours_left"]]
@@ -149,7 +151,9 @@ def table(df: pd.DataFrame, cols: list[str], height: int | None = None):
         "category": "Category", "phase": "Phase",
         "probability": st.column_config.NumberColumn("YES prob.", format="%.1f%%"),
         "delta_pp": st.column_config.NumberColumn("Δ Prob.", format="%+.1f pp"),
-        "trades_24h": st.column_config.NumberColumn("Trades 24h", format="%d"),
+        "trades_24h": st.column_config.NumberColumn("Crowd trades 24h", format="%d"),
+        "tape_trades_24h": st.column_config.NumberColumn("All prints 24h", format="%d",
+                                                         help="Including market-maker / seed prints"),
         "trades_1h": st.column_config.NumberColumn("Trades 1h", format="%d"),
         "accel_x": st.column_config.NumberColumn("Pace ×", format="%.1fx"),
         "volume_usdc": st.column_config.NumberColumn("Volume (USDC)", format="%.2f"),
@@ -164,7 +168,7 @@ def table(df: pd.DataFrame, cols: list[str], height: int | None = None):
     st.dataframe(show[cols], column_config=cfg, hide_index=True, width="stretch", **kw)
 
 
-tabs = st.tabs(["Overview", "Movers", "Activity", "New Markets", "Resolved Replay", "Market Detail"])
+tabs = st.tabs(["Overview", "Movers", "Activity", "New Markets", "Resolved Replay", "Who's Trading", "Market Detail"])
 
 # ------------------------------------------------------------------ Overview
 with tabs[0]:
@@ -178,6 +182,13 @@ with tabs[0]:
     lr = pd.to_datetime(last_run["finished_at"], utc=True) if last_run is not None else None
     k[4].metric("Last refresh", f"{(now - lr).total_seconds() / 60:.0f} min ago" if lr is not None else "—",
                 help=f"{lr:%Y-%m-%d %H:%M:%S} UTC · {len(runs)} snapshots stored" if lr is not None else None)
+    if not profiles.empty:
+        mmw = profiles[profiles["role"] == "market maker"]
+        if len(mmw):
+            st.info(f"**Tape integrity:** {mmw['share_of_tape'].sum():.0%} of all shares on the Panta trade tape come "
+                    f"from {len(mmw)} market-maker wallet{'s' if len(mmw) > 1 else ''} "
+                    f"(liquidity seeding, not conviction). Signal Radar counts **crowd trades only** — "
+                    f"see *Who's Trading*.")
     st.subheader("Top signals")
     top = view[view["is_open"]].head(15)
     if top.empty:
@@ -204,7 +215,7 @@ with tabs[2]:
     else:
         if act["trades_24h"].fillna(0).sum() == 0:
             st.caption("Trade tapes fetched — no trades in the last 24h for these markets.")
-        table(act, ["market", "trades_24h", "trades_1h", "accel_x", "volume_usdc", "d_vol",
+        table(act, ["market", "trades_24h", "tape_trades_24h", "trades_1h", "accel_x", "volume_usdc", "d_vol",
                     "signal", "attention_score", "reason"])
 
 # ------------------------------------------------------------------ New
@@ -230,6 +241,15 @@ with tabs[4]:
                              help="Thin markets are noisy — raise this to look only at markets with real flow.")
         rep = rep[(rep["directional_trades"] >= min_bets) | (min_bets <= 1)]
         sm = replay_summary(rep)
+        if sm["naive_with_flow"] and sm["with_flow"]:
+            n1, n2, n3 = st.columns(3)
+            n1.metric("Naive tape reading", f"{sm['naive_correct']}/{sm['naive_with_flow']} correct",
+                      f"{sm['naive_correct'] / sm['naive_with_flow']:.0%}", delta_color="off",
+                      help="All prints except seed pairs — what a typical dashboard counts")
+            n2.metric("Crowd only (market makers removed)", f"{sm['flow_correct']}/{sm['with_flow']} correct",
+                      f"{sm['flow_correct'] / sm['with_flow']:.0%}", delta_color="off")
+            n3.metric(f"Baseline: always {sm['baseline_side']}", f"{sm['baseline_correct']}/{sm['with_flow']} correct",
+                      f"{sm['baseline_correct'] / sm['with_flow']:.0%}", delta_color="off")
         k = st.columns(4)
         k[0].metric("Resolved / closed markets", sm["resolved"])
         k[1].metric("With known outcome", sm["with_outcome"])
@@ -269,8 +289,37 @@ with tabs[4]:
                          "replay": st.column_config.TextColumn("Replay", width="large"),
                      })
 
-# ------------------------------------------------------------------ Detail
+# ------------------------------------------------------------------ Who's trading
 with tabs[5]:
+    st.markdown("**Who is actually on the tape?** Every wallet seen in Panta trade tapes, with an explainable role. "
+                "A wallet is a **market maker** if it seeds YES+NO pairs across many markets or holds a dominant "
+                "share of all shares traded. Its prints are excluded from every crowd signal.")
+    if profiles.empty:
+        st.info("No trade tapes stored yet — run `backfill.bat`.")
+    else:
+        mm_n = int((profiles["role"] == "market maker").sum())
+        k = st.columns(4)
+        k[0].metric("Wallets on the tape", len(profiles))
+        k[1].metric("Market makers", mm_n)
+        k[2].metric("Market-maker share of tape", f"{profiles.loc[profiles['role'] == 'market maker', 'share_of_tape'].sum():.0%}")
+        k[3].metric("Seed-pair prints", int(prepared["is_seed"].sum()) if not prepared.empty else 0)
+        pv = profiles.copy()
+        pv["share_pct"] = pv["share_of_tape"] * 100
+        pv["wallet_short"] = pv["wallet"].str[:6] + ".." + pv["wallet"].str[-4:]
+        st.dataframe(pv[["wallet_short", "role", "trades", "markets", "share_pct", "seed_ratio", "no_ratio", "why", "wallet"]],
+                     hide_index=True, width="stretch",
+                     column_config={"wallet_short": "Wallet", "role": "Role",
+                                    "trades": st.column_config.NumberColumn("Prints", format="%d"),
+                                    "markets": st.column_config.NumberColumn("Markets", format="%d"),
+                                    "share_pct": st.column_config.ProgressColumn("Share of tape", min_value=0,
+                                                                                 max_value=100, format="%.1f%%"),
+                                    "seed_ratio": st.column_config.NumberColumn("Seed pairs", format="percent"),
+                                    "no_ratio": st.column_config.NumberColumn("NO side", format="percent"),
+                                    "why": st.column_config.TextColumn("Why", width="large"),
+                                    "wallet": st.column_config.TextColumn("Full address")})
+
+# ------------------------------------------------------------------ Detail
+with tabs[6]:
     opts = view if not view.empty else radar
     labels = {r.market_id: f"{r.market}  ·  {r.category or '—'}" for r in opts.itertuples()}
     mid = st.selectbox("Market", list(labels), format_func=labels.get)
