@@ -81,3 +81,13 @@ def test_activity_only_not_inflated():
 
 def test_empty_inputs():
     assert build_radar(pd.DataFrame(), pd.DataFrame(), now=NOW).empty
+
+
+def test_closing_soon_and_last_trade_reason():
+    row = {"phase": "secondary", "resolved": False, "trades_24h": 0, "trades_1h": 0,
+           "end_time": NOW + timedelta(hours=7.5), "last_trade_at": NOW - timedelta(days=5),
+           "valuation_status": "indicative"}
+    out = score_row(row, NOW)
+    assert out["signal"] == "CLOSING SOON" and out["attention_score"] == 10
+    assert "ends in 7.5h" in out["reason"] and "Last trade 5d ago" in out["reason"]
+    assert "indicative" in out["reason"]

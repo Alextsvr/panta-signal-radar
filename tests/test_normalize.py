@@ -64,3 +64,25 @@ def test_trades_summary():
     assert s["trades_24h"] == 6 and s["trades_1h"] == 3  # 0, 30, 60 minutes ago
     assert s["wallets_24h"] == 2 and s["tape_capped"] is False
     assert trades[0]["side"] == "yes" and trades[0]["market_id"] == "M"
+
+
+# Shape of a real live row (pk_live_, 2026-10-01): empty title, Unix seconds, extra fields
+LIVE_ROW = {"marketId": "6yEBmxJu2oWdubFVKZshVVUpLLsXd61csSfmf8y4Qtwd", "category": "pop-culture", "title": "",
+            "phase": "primary", "status": "primary", "resolved": False, "startTime": 1790597700,
+            "endTime": 1791151200, "volumeUsdc": "245.704615", "totalVolumeUsdc": "250.704615",
+            "yesPrice": "0.520520999", "priceSource": "primary_last", "valuationStatus": "complete"}
+
+
+def test_live_row():
+    from panta_radar.normalize import display_title
+    m = normalize_market(LIVE_ROW)
+    assert m["title"] is None and display_title(m) == "[untitled pop-culture] 6yEB…Qtwd"
+    assert m["start_time"].year == 2026 and m["volume_usdc"] == 245.704615
+    assert m["total_volume_usdc"] == 250.704615
+    assert m["api_price_source"] == "primary_last" and m["valuation_status"] == "complete"
+
+
+def test_resolved_flag_closes_secondary_active():
+    from panta_radar.normalize import is_open
+    assert not is_open(normalize_market({"marketId": "x", "phase": "secondary", "resolved": True}))
+    assert is_open(normalize_market({"marketId": "y", "phase": "secondary", "resolved": False}))
