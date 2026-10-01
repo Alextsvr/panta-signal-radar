@@ -14,7 +14,7 @@ from typing import Iterator
 
 import pandas as pd
 
-from .config import DB_PATH
+from .config import load_settings
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     trades_sampled INTEGER, trades_1h INTEGER, trades_24h INTEGER,
     shares_24h REAL, fees_24h REAL, wallets_24h INTEGER,
     last_trade_at TEXT, tape_capped INTEGER,
+    api_price_source TEXT, valuation_status TEXT,
     PRIMARY KEY (run_id, market_id)
 );
 CREATE INDEX IF NOT EXISTS ix_snap_market_ts ON snapshots(market_id, snapshot_ts);
@@ -63,7 +64,7 @@ MARKET_COLS = ["market_id", "title", "description", "category", "phase", "status
                "created_by_partner"]
 SNAP_COLS = ["phase", "status", "yes_price", "no_price", "price_source", "volume_usdc",
              "total_volume_usdc", "trades_sampled", "trades_1h", "trades_24h", "shares_24h",
-             "fees_24h", "wallets_24h", "last_trade_at", "tape_capped"]
+             "fees_24h", "wallets_24h", "last_trade_at", "tape_capped", "api_price_source", "valuation_status"]
 TRADE_COLS = ["trade_id", "market_id", "wallet", "is_primary", "yes_amount", "no_amount", "shares",
               "fee_paid", "usdc_amount", "side", "kind", "block_time", "signature"]
 
@@ -80,14 +81,31 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def resolve_db(db_path: Path | str | None) -> Path:
+    return Path(db_path) if db_path else load_settings().db_path
+
+
+# columns added after the first schema version -> ALTER TABLE on old DBs
+MIGRATIONS = {"snapshots": {"api_price_source": "TEXT", "valuation_status": "TEXT"}}
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    for table, cols in MIGRATIONS.items():
+        have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for c, typ in cols.items():
+            if c not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {c} {typ}")
+
+
 @contextmanager
-def connect(db_path: Path | str = DB_PATH) -> Iterator[sqlite3.Connection]:
-    db_path = Path(db_path)
+def connect(db_path: Path | str | None = None) -> Iterator[sqlite3.Connection]:
+    db_path = resolve_db(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
         con.executescript(SCHEMA)
+        _migrate(con)
         yield con
         con.commit()
     finally:
@@ -138,24 +156,24 @@ def _df(con, sql: str, params=()) -> pd.DataFrame:
     return pd.read_sql_query(sql, con, params=params)
 
 
-def load_runs(db_path=DB_PATH) -> pd.DataFrame:
+def load_runs(db_path=None) -> pd.DataFrame:
     with connect(db_path) as con:
         return _df(con, "SELECT * FROM runs WHERE finished_at IS NOT NULL ORDER BY run_id")
 
 
-def load_markets(db_path=DB_PATH) -> pd.DataFrame:
+def load_markets(db_path=None) -> pd.DataFrame:
     with connect(db_path) as con:
         return _df(con, "SELECT * FROM markets")
 
 
-def load_snapshots(db_path=DB_PATH, since_iso: str | None = None) -> pd.DataFrame:
+def load_snapshots(db_path=None, since_iso: str | None = None) -> pd.DataFrame:
     with connect(db_path) as con:
         if since_iso:
             return _df(con, "SELECT * FROM snapshots WHERE snapshot_ts >= ? ORDER BY snapshot_ts", (since_iso,))
         return _df(con, "SELECT * FROM snapshots ORDER BY snapshot_ts")
 
 
-def load_trades(market_id: str, db_path=DB_PATH, limit: int = 500) -> pd.DataFrame:
+def load_trades(market_id: str, db_path=None, limit: int = 500) -> pd.DataFrame:
     with connect(db_path) as con:
         return _df(con, "SELECT * FROM trades WHERE market_id=? ORDER BY block_time DESC LIMIT ?",
                    (market_id, limit))

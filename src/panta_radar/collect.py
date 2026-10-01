@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Callable
 
 from .api import PantaAPIError, PantaClient
-from .config import DB_PATH, RAW_DIR
-from .normalize import is_open, normalize_market, normalize_markets, normalize_trade, summarize_trades
+from .config import RAW_DIR
+from .normalize import display_title, is_open, normalize_market, normalize_markets, normalize_trade, summarize_trades
 from .storage import connect, finish_run, insert_snapshot, insert_trades, start_run, upsert_market, utcnow
 
 TRADES_LIMIT = 200  # documented max
@@ -22,10 +22,11 @@ def _save_raw(name: str, ts: datetime, payload) -> None:
         pass  # raw dumps are a debugging aid, never fatal
 
 
-def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db_path=DB_PATH,
+def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db_path=None,
                      progress: Callable[[float, str], None] | None = None, save_raw: bool = True) -> dict:
     """Returns a run summary dict. Raises PantaAPIError only if the market list itself fails."""
     client = client or PantaClient()
+    db_path = db_path or client.settings.db_path
     say = progress or (lambda frac, msg: None)
     ts = utcnow()
     errors: list[str] = []
@@ -41,14 +42,17 @@ def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db
     to_enrich = {m["market_id"] for m in open_ms[:max_enrich]}
 
     enriched = 0
+    raw_details: dict[str, dict] = {}
     with connect(db_path) as con:
         run_id = start_run(con, ts)
         for i, m in enumerate(markets):
             activity = None
             if m["market_id"] in to_enrich:
-                say(0.05 + 0.9 * enriched / max(1, len(to_enrich)), f"Enriching {m.get('title') or m['market_id']}")
+                say(0.05 + 0.9 * enriched / max(1, len(to_enrich)), f"Enriching {display_title(m)}")
                 try:
-                    detail = normalize_market(client.get_market(m["market_id"]))
+                    raw_d = client.get_market(m["market_id"])
+                    raw_details[m["market_id"]] = raw_d
+                    detail = normalize_market(raw_d)
                     if detail:
                         m = {**m, **{k: v for k, v in detail.items() if v is not None}}
                 except PantaAPIError as e:
@@ -64,6 +68,8 @@ def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db
             upsert_market(con, m, ts)
             insert_snapshot(con, run_id, ts, m, activity)
         finish_run(con, run_id, len(markets), enriched, client.calls, errors)
+    if save_raw and raw_details:
+        _save_raw("details", ts, raw_details)
     say(1.0, "Done")
     return {"run_id": run_id, "snapshot_ts": ts, "markets_seen": len(markets), "open_markets": len(open_ms),
-            "markets_enriched": enriched, "api_calls": client.calls, "errors": errors}
+            "markets_enriched": enriched, "api_calls": client.calls, "errors": errors, "db_path": str(db_path)}

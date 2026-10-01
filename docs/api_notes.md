@@ -27,6 +27,20 @@ The docs say both prefixes are "accepted on the public API". In practice a `pk_t
 
 ➡ The real catalog requires a **`pk_live_`** key (created the same way: Playground → API keys → env `live`).
 
+## Live catalog (pk_live_ key) **[verified 2026-10-01 09:58 UTC]**
+- `/markets/` → **87 markets** in one page set: phase `resolved` 44, `secondary` 40, `primary` 3.
+- `status` values: `resolved`, `secondary_active`, `secondary`, `primary` (≠ phase for secondary markets).
+- **`resolved: true` on 36 `secondary_active` markets** → truly open = `phase in (primary, secondary) and not resolved` = **7**.
+- Categories seen: sports 30, crypto 24, stocks 10, commodities 6, pop-culture 4, politics 4, macroeconomics 4, business 2, space-universe 1, world 1, gaming 1 (wider than `/categories/` sandbox list).
+- `marketType`: `breaking` 47, `standard` 40.
+- **Timestamps are Unix seconds** in live (`startTime: 1790911800`) but ISO strings in sandbox → normalizer accepts both.
+- **`title` is empty for 80/87 rows** (`description` empty for 80/87). `images` present for 86/87 (Cloudinary URLs). Detail call returns a title for some markets that lack one in the list.
+- Prices present on list rows for 50/87 (the 37 closed `secondary_active` ones have all prices `null`). Values are decimal strings with up to 9 digits (`"0.520520999"`).
+- Extra live fields not in docs: `priceSource` (`primary_last`, `secondary_last_trade`, `resolved_outcome`), `valuationStatus` (`complete`, `indicative`), `volumeUsdcBase`, `totalVolumeUsdc`, `totalVolumeUsdcBase`.
+- `totalVolumeUsdc` = `volumeUsdc` + creation seed (5 or 10 USDC). Signal Radar uses `volumeUsdc` (trading volume).
+- Volume distribution: 0 – 538.81 USDC, 44/87 non-zero. Trade tapes for open markets: 0–12 rows; 30 trades total across the 7 open markets, latest 2026-09-30 14:35 UTC.
+- Resolved markets: `yesPrice` = `"1"`/`"0"` (outcome), `priceSource: resolved_outcome`.
+
 ## Rate limits
 - Headers **[verified]**: `x-ratelimit-limit: 120`, `x-ratelimit-remaining`, `x-ratelimit-reset` (ISO-8601 UTC timestamp, not seconds).
 - Families [docs]: read 120 / 60 s per account; `Retry-After` on 429. Client throttles to ≥0.55 s between calls and retries 429/5xx with backoff.

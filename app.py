@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from panta_radar.api import PantaAPIError, PantaClient  # noqa: E402
 from panta_radar.collect import collect_snapshot  # noqa: E402
-from panta_radar.config import DB_PATH, load_settings  # noqa: E402
+from panta_radar.config import load_settings  # noqa: E402
+from panta_radar.normalize import display_title  # noqa: E402
 from panta_radar.signals import build_radar  # noqa: E402
 from panta_radar.storage import load_markets, load_runs, load_snapshots, load_trades  # noqa: E402
 
@@ -32,15 +33,16 @@ st.markdown("""
 
 # ------------------------------------------------------------------ data
 @st.cache_data(ttl=30, show_spinner=False)
-def load_all(db_mtime: float):
-    return load_markets(), load_snapshots(), load_runs()
-
-
-def db_mtime() -> float:
-    return DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0
+def load_all(db: str, db_mtime: float):
+    return load_markets(db), load_snapshots(db), load_runs(db)
 
 
 settings = load_settings()
+DB = settings.db_path
+
+
+def db_mtime() -> float:
+    return DB.stat().st_mtime if DB.exists() else 0.0
 
 # ------------------------------------------------------------------ header
 h1, h2 = st.columns([4, 1])
@@ -57,7 +59,7 @@ st.markdown('<div class="radar-msg">Panta answers <i>“What markets exist?”</
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
     st.subheader("Data")
-    st.caption(f"API key: `{settings.masked_key}`")
+    st.caption(f"API key: `{settings.masked_key}` · DB: `{DB.name}`")
     max_enrich = st.slider("Markets to enrich per refresh", 5, 60, 40, 5,
                            help="Open markets get a detail call (spot price) and a trade-tape call. "
                                 "Panta read limit ≈120 requests/min.")
@@ -80,7 +82,7 @@ with st.sidebar:
         st.info("Test key detected: Panta serves **sandbox fixtures** for `pk_test_` keys. "
                 "Use a `pk_live_` key for the real market catalog.")
 
-markets, snaps, runs = load_all(db_mtime())
+markets, snaps, runs = load_all(str(DB), db_mtime())
 if snaps.empty:
     st.info("No snapshots yet. Click **Refresh from Panta** in the sidebar "
             "(or run `python scripts/fetch_snapshot.py`).")
@@ -88,24 +90,33 @@ if snaps.empty:
 
 now = datetime.now(timezone.utc)
 radar = build_radar(markets, snaps, now=now)
+radar["market"] = [display_title(r) for r in radar.to_dict("records")]
+radar["ends_in"] = [("ended" if h <= 0 else f"in {h:.0f}h" if h < 48 else f"in {h / 24:.0f}d") if pd.notna(h) else "—"
+                    for h in radar["hours_left"]]
+radar["d_prob"] = [f"{x:+.1f} pp" if pd.notna(x) else "—" for x in radar["delta_pp"]]
+radar["d_vol"] = [f"{x:+,.2f}" if pd.notna(x) else "—" for x in radar["volume_delta"]]
 last_run = runs.iloc[-1] if not runs.empty else None
 
 # ------------------------------------------------------------------ filters
-f1, f2, f3, f4 = st.columns([2, 2, 3, 2])
+f0, f1, f2, f3, f4 = st.columns([1.3, 2, 2, 3, 1.6])
+open_only = f0.toggle("Open only", value=True, help="Hide resolved / closed markets")
 cats = sorted(radar["category"].dropna().unique().tolist())
 phases = sorted(radar["phase"].dropna().unique().tolist())
 sel_cat = f1.multiselect("Category", cats)
-sel_phase = f2.multiselect("Phase", phases, default=[p for p in phases if p in ("primary", "secondary")] or phases)
+sel_phase = f2.multiselect("Phase", phases)
 query = f3.text_input("Search", placeholder="market title…")
 min_trades = f4.number_input("Min trades (24h)", 0, 10_000, 0)
 
 view = radar.copy()
+if open_only:
+    view = view[view["is_open"]]
 if sel_cat:
     view = view[view["category"].isin(sel_cat)]
 if sel_phase:
     view = view[view["phase"].isin(sel_phase)]
 if query:
-    view = view[view["title"].fillna("").str.contains(query, case=False, regex=False)]
+    view = view[view["market"].str.contains(query, case=False, regex=False)
+                | view["market_id"].str.contains(query, case=False, regex=False)]
 if min_trades:
     view = view[view["trades_24h"].fillna(0) >= min_trades]
 
@@ -119,7 +130,9 @@ def table(df: pd.DataFrame, cols: list[str], height: int | None = None):
     show = df.copy()
     show["probability"] = show["yes_price"] * 100
     cfg = {
-        "title": st.column_config.TextColumn("Market", width="large"),
+        "market": st.column_config.TextColumn("Market", width="large"),
+        "ends_in": "Ends",
+        "d_prob": "Δ Prob.", "d_vol": "Δ Volume",
         "category": "Category", "phase": "Phase",
         "probability": st.column_config.NumberColumn("YES prob.", format="%.1f%%"),
         "delta_pp": st.column_config.NumberColumn("Δ Prob.", format="%+.1f pp"),
@@ -157,7 +170,7 @@ with tabs[0]:
     if top.empty:
         st.caption("No open markets match the filters.")
     else:
-        table(top, ["title", "probability", "delta_pp", "trades_24h", "volume_usdc", "signal",
+        table(top, ["market", "probability", "d_prob", "trades_24h", "volume_usdc", "ends_in", "signal",
                     "attention_score", "reason"])
 
 # ------------------------------------------------------------------ Movers
@@ -168,7 +181,7 @@ with tabs[1]:
                 "of a market with a spot price.")
     else:
         mv = mv.reindex(mv["delta_pp"].abs().sort_values(ascending=False).index)
-        table(mv, ["title", "probability", "delta_pp", "volume_delta", "signal", "attention_score", "reason"])
+        table(mv, ["market", "probability", "d_prob", "d_vol", "signal", "attention_score", "reason"])
 
 # ------------------------------------------------------------------ Activity
 with tabs[2]:
@@ -178,7 +191,7 @@ with tabs[2]:
     else:
         if act["trades_24h"].fillna(0).sum() == 0:
             st.caption("Trade tapes fetched — no trades in the last 24h for these markets.")
-        table(act, ["title", "trades_24h", "trades_1h", "accel_x", "volume_usdc", "volume_delta",
+        table(act, ["market", "trades_24h", "trades_1h", "accel_x", "volume_usdc", "d_vol",
                     "signal", "attention_score", "reason"])
 
 # ------------------------------------------------------------------ New
@@ -188,18 +201,23 @@ with tabs[3]:
     if nw.empty:
         st.info("No markets with a start time.")
     else:
-        table(nw.head(30), ["title", "category", "phase", "start_time", "end_time", "probability",
+        table(nw.head(30), ["market", "category", "phase", "start_time", "end_time", "probability",
                             "volume_usdc", "signal"])
 
 # ------------------------------------------------------------------ Detail
 with tabs[4]:
     opts = view if not view.empty else radar
-    labels = {r.market_id: f"{r.title or r.market_id}  ·  {r.category or '—'}" for r in opts.itertuples()}
+    labels = {r.market_id: f"{r.market}  ·  {r.category or '—'}" for r in opts.itertuples()}
     mid = st.selectbox("Market", list(labels), format_func=labels.get)
     r = radar[radar["market_id"] == mid].iloc[0]
-    st.markdown(f"### {r['title'] or mid}")
-    st.caption(f"`{mid}` · {r.get('category') or '—'} · phase **{r.get('phase') or '—'}** · "
-               f"{r.get('market_type') or ''} · {r.get('region') or ''}")
+    hc1, hc2 = st.columns([1, 6])
+    if isinstance(r.get("image"), str) and r["image"].startswith("http"):
+        hc1.image(r["image"], width=110)
+    hc2.markdown(f"### {r['market']}")
+    hc2.caption(f"`{mid}` · {r.get('category') or '—'} · phase **{r.get('phase') or '—'}** · "
+               f"{r.get('market_type') or ''} · {r.get('region') or ''} · ends {r['ends_in']}"
+               + (f" · price source `{r.get('api_price_source')}` ({r.get('valuation_status')})"
+                  if pd.notna(r.get("api_price_source")) else ""))
     c = st.columns(5)
     c[0].metric("YES probability", f"{r['yes_price'] * 100:.1f}%" if pd.notna(r["yes_price"]) else "N/A",
                 f"{r['delta_pp']:+.1f} pp" if pd.notna(r["delta_pp"]) else None)

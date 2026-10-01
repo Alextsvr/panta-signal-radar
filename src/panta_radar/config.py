@@ -10,10 +10,17 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
-DB_PATH = Path(os.getenv("PANTA_RADAR_DB") or DATA_DIR / "radar.db")
 
 # Confirmed in docs.panta.market and the official playground's .env.example
 DEFAULT_BASE_URL = "https://live-api.panta.market/api/v1"
+
+
+def default_db_path(key: str | None) -> Path:
+    """pk_test_ keys only see a sandbox fixture -> separate DB so it never mixes with live data."""
+    env = os.getenv("PANTA_RADAR_DB")
+    if env:
+        return Path(env)
+    return DATA_DIR / ("radar_sandbox.db" if (key or "").startswith("pk_test_") else "radar.db")
 
 
 def mask_key(key: str | None) -> str:
@@ -29,6 +36,7 @@ def mask_key(key: str | None) -> str:
 class Settings:
     api_key: str | None
     base_url: str
+    db_path: Path = DATA_DIR / "radar.db"
     timeout_s: float = 20.0
 
     @property
@@ -36,11 +44,11 @@ class Settings:
         return mask_key(self.api_key)
 
     def __repr__(self) -> str:  # never leak the key through repr()/logging
-        return f"Settings(api_key={self.masked_key!r}, base_url={self.base_url!r})"
+        return f"Settings(api_key={self.masked_key!r}, base_url={self.base_url!r}, db_path={str(self.db_path)!r})"
 
 
 def load_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     key = (os.getenv("PANTA_API_KEY") or "").strip().strip('"').strip("'") or None
     base = (os.getenv("PANTA_API_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    return Settings(api_key=key, base_url=base)
+    return Settings(api_key=key, base_url=base, db_path=default_db_path(key))

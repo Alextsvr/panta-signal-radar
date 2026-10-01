@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from panta_radar.api import PantaAPIError, PantaClient  # noqa: E402
 from panta_radar.collect import collect_snapshot  # noqa: E402
-from panta_radar.config import DB_PATH, load_settings  # noqa: E402
+from panta_radar.config import load_settings  # noqa: E402
 
 
 def once(max_enrich: int) -> int:
     s = load_settings()
-    print(f"key {s.masked_key} -> {s.base_url}")
+    print(f"key {s.masked_key} -> {s.base_url}  db={s.db_path.name}")
     try:
         r = collect_snapshot(PantaClient(s), max_enrich=max_enrich,
                              progress=lambda f, m: print(f"  [{f:4.0%}] {m}"))
@@ -30,7 +30,7 @@ def once(max_enrich: int) -> int:
         return 2
     print(f"run #{r['run_id']} @ {r['snapshot_ts']:%Y-%m-%d %H:%M:%S}Z  markets={r['markets_seen']} "
           f"open={r['open_markets']} enriched={r['markets_enriched']} api_calls={r['api_calls']} "
-          f"errors={len(r['errors'])}  -> {DB_PATH}")
+          f"errors={len(r['errors'])}  -> {r['db_path']}")
     for e in r["errors"][:5]:
         print("  !", e)
     return 0

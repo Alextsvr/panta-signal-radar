@@ -24,13 +24,15 @@ OPEN_PHASES = ("primary", "secondary")
 @dataclass(frozen=True)
 class ScoreConfig:
     window_h: float = 24.0          # look-back window for deltas
+    # Scales calibrated on the live catalog (2026-10-01): open-market volume 0-390 USDC,
+    # trade tapes of 0-12 rows, a handful of trades per market per day.
     move_full_pp: float = 10.0      # |Δprob| of 10pp => move component = 1
-    trades_full: int = 50           # 50 trades / 24h => activity component = 1 (log scale)
-    flow_full_usdc: float = 1000.0  # +1000 USDC volume in window => flow component = 1 (log scale)
+    trades_full: int = 10           # 10 trades / 24h => activity component = 1 (log scale)
+    flow_full_usdc: float = 100.0   # +100 USDC volume in window => flow component = 1 (log scale)
     accel_full_x: float = 4.0       # last-hour pace 4x the 24h average => accel component = 1
     new_h: float = 72.0             # started within 72h => "new"
     closing_h: float = 48.0         # ends within 48h => "closing soon"
-    min_trades_for_accel: int = 5
+    min_trades_for_accel: int = 3
     w_move: float = 0.35
     w_activity: float = 0.25
     w_flow: float = 0.20
@@ -148,6 +150,12 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
         reasons.append(f"New market: opened {fmt_dur(age_h)} ago")
     if closing:
         reasons.append(f"Closing soon: ends in {fmt_dur(left_h)}")
+    if is_open and (math.isnan(t24) or t24 == 0):
+        lt = r.get("last_trade_at")
+        if lt is not None and not pd.isna(lt):
+            reasons.append(f"Last trade {fmt_dur((now - pd.Timestamp(lt)).total_seconds() / 3600)} ago")
+    if is_open and r.get("valuation_status") == "indicative":
+        reasons.append("price is indicative (last secondary trade)")
 
     comps = {"c_move": c_move, "c_activity": c_act, "c_flow": c_flow, "c_accel": c_accel, "c_timing": c_timing}
     score = (cfg.w_move * c_move + cfg.w_activity * c_act + cfg.w_flow * c_flow
@@ -168,6 +176,8 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
         label = max(contrib, key=contrib.get)
 
     has_history = not math.isnan(obs_h)
+    if not has_history and is_open and not any("moved" in x for x in reasons):
+        reasons.append("history accumulating")
     if not reasons:
         reasons.append("No movement or trading detected yet" if has_history
                        else "Historical signal data is accumulating (first snapshot)")

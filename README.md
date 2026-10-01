@@ -60,11 +60,12 @@ Each open market gets five components, each bounded to [0, 1] on a fixed, docume
 | Component | Weight | Full marks at | Needs |
 |---|---|---|---|
 | Move — \|Δ YES probability\| over the 24h window | 0.35 | 10 pp | ≥2 snapshots with price |
-| Activity — trades in last 24h (log scale) | 0.25 | 50 trades | trade tape |
-| Flow — Δ cumulative volume in window (log scale) | 0.20 | +1,000 USDC | ≥2 snapshots |
-| Pace — last-hour trades vs 24h average | 0.10 | 4× | ≥5 trades/24h |
+| Activity — trades in last 24h (log scale) | 0.25 | 10 trades | trade tape |
+| Flow — Δ cumulative volume in window (log scale) | 0.20 | +100 USDC | ≥2 snapshots |
+| Pace — last-hour trades vs 24h average | 0.10 | 4× | ≥3 trades/24h |
 | Timing — opened <72h ago or ends <48h | 0.10 | flag | catalog times |
 
+Scales are calibrated on the live catalog (Oct 2026: open-market volume 0–390 USDC, a few trades per market per day) and live in `ScoreConfig`.
 `Attention = round(100 × Σ weight × component)`. Missing data contributes **0** — scores are never
 re-inflated when history is short, so a first-run score is honestly low. Labels: **TRENDING** (move and
 activity/flow both ≥0.3), otherwise the strongest contributor — **MOVER, ACTIVE, SURGE, NEW, CLOSING SOON**, or **QUIET**.
@@ -91,10 +92,11 @@ copy .env.example .env      # then put your key in .env
 |---|---|---|
 | `PANTA_API_KEY` | — | required, `pk_live_…` for real markets |
 | `PANTA_API_BASE_URL` | `https://live-api.panta.market/api/v1` | |
-| `PANTA_RADAR_DB` | `data/radar.db` | SQLite path |
+| `PANTA_RADAR_DB` | `data/radar.db` (`radar_sandbox.db` for `pk_test_`) | SQLite path |
 
 ## Limitations
-- `pk_test_` keys return a single sandbox fixture market (verified); real signals need a `pk_live_` key.
+- `pk_test_` keys return a single sandbox fixture market (verified); real signals need a `pk_live_` key. Sandbox data goes to a separate `radar_sandbox.db`.
+- Most live catalog rows have an empty `title` (80 of 87 on 2026-10-01); the UI falls back to `[untitled <category>] abcd…wxyz`.
 - Movement/flow signals need ≥2 snapshots; history starts on first run (no backfill — the API exposes none).
 - Trade tape is capped at 200 rows per call → 24h counts on very busy markets are lower bounds (shown as "≥").
 - No liquidity / order-book depth in the API, so it is not scored.

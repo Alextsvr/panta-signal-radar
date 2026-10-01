@@ -87,10 +87,21 @@ def normalize_market(raw: dict) -> dict | None:
         "total_volume_usdc": usdc(raw.get("totalVolumeUsdc"), raw.get("totalVolumeUsdcBase")),
         "yes_price": yes,
         "no_price": no,
-        "price_source": src,
+        "price_source": src,                       # which field we read the probability from
+        "api_price_source": raw.get("priceSource") or None,       # live: primary_last / secondary_last_trade / resolved_outcome
+        "valuation_status": raw.get("valuationStatus") or None,   # live: complete / indicative
         "created_by_partner": raw.get("createdByPartner") if isinstance(raw.get("createdByPartner"), bool) else None,
         "image": images[0] if images else None,
     }
+
+
+def display_title(m: dict) -> str:
+    """Live catalog rows often have an empty title (80/87 on 2026-10-01) -> readable fallback."""
+    t = (m.get("title") or "").strip()
+    if t:
+        return t
+    mid = str(m.get("market_id") or "?")
+    return f"[untitled {m.get('category') or 'market'}] {mid[:4]}…{mid[-4:]}"
 
 
 def normalize_markets(raws: Iterable[dict]) -> list[dict]:
