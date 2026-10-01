@@ -11,6 +11,8 @@ if not exist logs mkdir logs
 set LOG=logs\run_output.txt
 echo === %DATE% %TIME% === > %LOG%
 .venv\Scripts\python.exe -m pip install --disable-pip-version-check -q -r requirements.txt >> %LOG% 2>&1
+echo --- sync 24/7 dataset from GitHub >> %LOG%
+.venv\Scripts\python.exe scripts\sync_data.py >> %LOG% 2>&1
 echo --- fetch_snapshot >> %LOG%
 .venv\Scripts\python.exe scripts\fetch_snapshot.py >> %LOG% 2>&1
 echo --- pytest >> %LOG%
