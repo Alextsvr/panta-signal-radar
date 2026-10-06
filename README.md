@@ -151,6 +151,35 @@ successful runs, median gap 4.7 h (min 2.7 h, max 8.9 h), no run with errors. Th
 coverage (runs, median and largest gap), and movements are measured only between snapshots that exist.
 `python scripts/sync_data.py` imports the branch into the local SQLite.
 
+## Streamlit Community Cloud (public read-only deployment)
+```
+GitHub Actions + PANTA_API_KEY (repo secret)  ->  public `data` branch (JSONL)
+        ->  Streamlit Community Cloud app  ->  ephemeral SQLite rebuilt from the data branch
+```
+GitHub Actions owns all Panta API collection. The public app only consumes the public `data` branch plus the
+committed `datasets/panta-trade-backfill-*`; it never calls the Panta API and never holds a key.
+
+| Setting | Value |
+|---|---|
+| Repository | `Alextsvr/panta-signal-radar` |
+| Branch | `main` |
+| Main file | `app.py` |
+| Python | 3.12 (Advanced settings) |
+| Secrets | `PANTA_RADAR_PUBLIC_MODE = "1"` |
+
+**Do NOT put `PANTA_API_KEY` into Streamlit Community Cloud.** In public mode the key is ignored even if present,
+the "Refresh from Panta" control is removed and `PantaClient` refuses to start.
+
+How public mode works (`src/panta_radar/publicsync.py`):
+- On boot (no `data/radar.db` on the ephemeral filesystem) the app imports the `data` branch and the committed
+  backfill into a new SQLite — a reboot recovers automatically.
+- Re-sync at most every 10 minutes per server process (`git fetch origin data`, falling back to HTTPS from
+  GitHub), importing only missing runs and trades; reruns by visitors never fetch.
+- If a sync fails, the last synchronized DB keeps being served with a warning; if no DB exists yet, the app shows
+  an error instead of crashing and retries after a minute.
+- Local check: `PANTA_RADAR_PUBLIC_MODE=1 streamlit run app.py` (optional `PANTA_RADAR_DB=<tmp path>` to keep your
+  local DB untouched, `PANTA_RADAR_DATA_DIR=<data-branch checkout>` to work offline).
+
 ## Run locally (Windows)
 Double-click `setup_and_inspect.bat` once (creates `.venv`, installs deps, inspects the API), then `run_radar.bat`
 (takes a snapshot, runs tests, opens the dashboard). Manually:
@@ -170,6 +199,8 @@ copy .env.example .env      # then put your key in .env
 | `PANTA_API_KEY` | — | required, `pk_live_…` for real markets |
 | `PANTA_API_BASE_URL` | `https://live-api.panta.market/api/v1` | |
 | `PANTA_RADAR_DB` | `data/radar.db` (`radar_sandbox.db` for `pk_test_`) | SQLite path |
+| `PANTA_RADAR_PUBLIC_MODE` | off | `1` = read-only public deployment (no API key, no API calls) |
+| `PANTA_RADAR_DATA_DIR` | — | public mode: read the data branch from a local directory instead of GitHub |
 
 ## Limitations
 - `pk_test_` keys return a single sandbox fixture market (verified); real signals need a `pk_live_` key. Sandbox data goes to a separate `radar_sandbox.db`.

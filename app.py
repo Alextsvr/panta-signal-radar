@@ -18,7 +18,8 @@ import importlib  # noqa: E402
 
 import panta_radar  # noqa: E402
 
-for _name in ("config", "normalize", "api", "storage", "snapshots", "signals", "replay", "datastore", "collect"):
+for _name in ("config", "normalize", "api", "storage", "snapshots", "signals", "replay", "datastore", "collect",
+              "reproduce", "publicsync"):
     _mod = sys.modules.get(f"panta_radar.{_name}")
     if _mod is not None:
         importlib.reload(_mod)
@@ -26,6 +27,7 @@ for _name in ("config", "normalize", "api", "storage", "snapshots", "signals", "
 from panta_radar.api import PantaAPIError, PantaClient  # noqa: E402
 from panta_radar.collect import collect_snapshot  # noqa: E402
 from panta_radar.config import load_settings  # noqa: E402
+from panta_radar.publicsync import SyncThrottle, sync_public_data  # noqa: E402
 from panta_radar.normalize import display_title  # noqa: E402
 from panta_radar.replay import MM_ROLE, build_replay, prepare_trades, replay_summary, tag_crowd, wallet_profiles  # noqa: E402
 from panta_radar.snapshots import coverage_stats  # noqa: E402
@@ -51,8 +53,30 @@ def load_all(db: str, db_mtime: float):
     return load_markets(db), load_snapshots(db), load_runs(db), load_all_trades(db)
 
 
+def _secrets_to_env() -> None:
+    """Streamlit Community Cloud exposes root-level secrets as env vars; copy the one flag we use
+    explicitly in case it is only available through st.secrets."""
+    import os
+    if "PANTA_RADAR_PUBLIC_MODE" in os.environ:
+        return
+    try:
+        v = st.secrets.get("PANTA_RADAR_PUBLIC_MODE")
+    except Exception:  # noqa: BLE001 - no secrets file locally
+        v = None
+    if v is not None:
+        os.environ["PANTA_RADAR_PUBLIC_MODE"] = str(v)
+
+
+_secrets_to_env()
 settings = load_settings()
 DB = settings.db_path
+PUBLIC = settings.public_mode
+
+
+@st.cache_resource(show_spinner=False)
+def sync_throttle() -> SyncThrottle:
+    """One throttle per server process: the public data branch is fetched at most every 10 min."""
+    return SyncThrottle()
 
 
 def db_mtime() -> float:
@@ -70,36 +94,61 @@ st.markdown('<div class="radar-msg">Panta answers <i>“What markets exist?”</
             'Signal Radar answers <b>“What changed, what matters, and where should I look first?”</b></div>',
             unsafe_allow_html=True)
 
+# ------------------------------------------------------------------ public bootstrap / sync
+sync = None
+if PUBLIC:
+    # Rebuilds the ephemeral SQLite from the public `data` branch + committed backfills.
+    # No Panta API call, no API key; throttled so reruns do not trigger git/HTTP fetches.
+    with st.spinner("Synchronizing public data…"):
+        sync = sync_throttle().maybe_sync(lambda: sync_public_data(DB))
+    if sync is not None and sync.fatal:
+        st.error("Public data could not be loaded and no local copy exists yet. "
+                 f"Please reload in a minute. ({sync.error})")
+        st.stop()
+
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
     st.subheader("Data")
-    st.caption(f"API key: `{settings.masked_key}` · DB: `{DB.name}`")
-    max_enrich = st.slider("Markets to enrich per refresh", 5, 60, 40, 5,
-                           help="Open markets get a detail call (spot price) and a trade-tape call. "
-                                "Panta read limit ≈120 requests/min.")
-    if st.button("🔄 Refresh from Panta", type="primary", width="stretch",
-                 disabled=not settings.api_key):
-        bar = st.progress(0.0, text="Starting…")
-        try:
-            res = collect_snapshot(PantaClient(settings), max_enrich=max_enrich,
-                                   progress=lambda f, m: bar.progress(min(f, 1.0), text=m[:60]))
-            st.success(f"Snapshot #{res['run_id']}: {res['markets_seen']} markets, "
-                       f"{res['markets_enriched']} enriched, {res['api_calls']} API calls")
-            for e in res["errors"][:3]:
-                st.warning(e)
-            st.cache_data.clear()
-        except PantaAPIError as e:
-            st.error(f"Panta API error: {e}")
-    if not settings.api_key:
-        st.error("PANTA_API_KEY missing in .env")
-    if (settings.api_key or "").startswith("pk_test_"):
-        st.info("Test key detected: Panta serves **sandbox fixtures** for `pk_test_` keys. "
-                "Use a `pk_live_` key for the real market catalog.")
+    if PUBLIC:
+        st.info("Public read-only mode · data synchronized from the GitHub collector.")
+        st.caption("Source: GitHub collector (`data` branch) + committed trade backfill · no visitor triggers a "
+                   "Panta API call.")
+        if sync is not None and not sync.ok:
+            st.warning("Latest sync failed; showing the last synchronized data.", icon="⚠️")
+    else:
+        st.caption(f"API key: `{settings.masked_key}` · DB: `{DB.name}`")
+        max_enrich = st.slider("Markets to enrich per refresh", 5, 60, 40, 5,
+                               help="Open markets get a detail call (spot price) and a trade-tape call. "
+                                    "Panta read limit ≈120 requests/min.")
+        if st.button("🔄 Refresh from Panta", type="primary", width="stretch",
+                     disabled=not settings.api_key):
+            bar = st.progress(0.0, text="Starting…")
+            try:
+                res = collect_snapshot(PantaClient(settings), max_enrich=max_enrich,
+                                       progress=lambda f, m: bar.progress(min(f, 1.0), text=m[:60]))
+                st.success(f"Snapshot #{res['run_id']}: {res['markets_seen']} markets, "
+                           f"{res['markets_enriched']} enriched, {res['api_calls']} API calls")
+                for e in res["errors"][:3]:
+                    st.warning(e)
+                st.cache_data.clear()
+            except PantaAPIError as e:
+                st.error(f"Panta API error: {e}")
+        if not settings.api_key:
+            st.error("PANTA_API_KEY missing in .env")
+        if (settings.api_key or "").startswith("pk_test_"):
+            st.info("Test key detected: Panta serves **sandbox fixtures** for `pk_test_` keys. "
+                    "Use a `pk_live_` key for the real market catalog.")
 
 markets, snaps, runs, all_trades = load_all(str(DB), db_mtime())
+if PUBLIC:
+    with st.sidebar:
+        last = pd.to_datetime(snaps["snapshot_ts"], utc=True).max() if not snaps.empty else None
+        st.caption(f"Last stored snapshot: {last:%Y-%m-%d %H:%M} UTC" if last is not None else
+                   "Last stored snapshot: —")
+        st.caption("Scheduled every 15 min; actual GitHub Actions cadence is best-effort.")
 if snaps.empty:
-    st.info("No snapshots yet. Click **Refresh from Panta** in the sidebar "
-            "(or run `python scripts/fetch_snapshot.py`).")
+    st.info("No snapshots yet. " + ("The public collector has not published data yet." if PUBLIC else
+            "Click **Refresh from Panta** in the sidebar (or run `python scripts/fetch_snapshot.py`)."))
     st.stop()
 
 now = datetime.now(timezone.utc)
@@ -174,7 +223,7 @@ tabs = st.tabs(["Overview", "Movers", "Activity", "New Markets", "Resolved Repla
 # ------------------------------------------------------------------ Overview
 with tabs[0]:
     open_n = int(radar["is_open"].sum())
-    sig_n = int((radar["attention_score"].fillna(0) >= 20).sum())
+    sig_n = int((pd.to_numeric(radar["attention_score"], errors="coerce").fillna(0) >= 20).sum())
     k = st.columns(5)
     k[0].metric("Total markets", len(radar))
     k[1].metric("Open markets", open_n)

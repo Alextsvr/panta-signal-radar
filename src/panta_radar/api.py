@@ -30,6 +30,9 @@ class PantaClient:
     def __init__(self, settings: Settings | None = None, min_interval_s: float = 0.55,
                  max_retries: int = 3, session: requests.Session | None = None):
         self.settings = settings or load_settings()
+        if getattr(self.settings, "public_mode", False):
+            raise PantaAPIError("config", None, "PUBLIC_MODE",
+                                "direct Panta API access is disabled in public read-only mode")
         if not self.settings.api_key:
             raise PantaAPIError("config", None, "NO_API_KEY", "PANTA_API_KEY is not set in .env")
         self.min_interval_s = min_interval_s  # 0.55 s keeps us under 120 req/min

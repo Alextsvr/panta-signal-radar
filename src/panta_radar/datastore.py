@@ -91,6 +91,7 @@ def import_lines(db_path, files: dict[str, Iterable[str]]) -> dict[str, int]:
             con.execute(f"INSERT OR IGNORE INTO trades({','.join(TRADE_COLS)}) VALUES ({','.join('?' * len(TRADE_COLS))})",
                         [t.get(c) for c in TRADE_COLS])
             added["trades"] += con.execute("SELECT changes()").fetchone()[0]
+        existing = {r[0] for r in con.execute("SELECT market_id FROM markets")}
         for m in data["markets"]:
             con.execute(
                 f"INSERT INTO markets({','.join(MARKET_COLS)},first_seen_at,last_seen_at) "
@@ -99,7 +100,9 @@ def import_lines(db_path, files: dict[str, Iterable[str]]) -> dict[str, int]:
                 + ",first_seen_at=MIN(markets.first_seen_at, excluded.first_seen_at)"
                 + ",last_seen_at=MAX(markets.last_seen_at, excluded.last_seen_at)",
                 [m.get(c) for c in MARKET_COLS] + [m.get("first_seen_at"), m.get("last_seen_at")])
-            added["markets"] += 1
+            if m["market_id"] not in existing:  # count new markets only (upserts refresh metadata)
+                existing.add(m["market_id"])
+                added["markets"] += 1
     return dict(added)
 
 
