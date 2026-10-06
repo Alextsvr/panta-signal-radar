@@ -308,6 +308,18 @@ with tabs[4]:
                       f"{sm['flow_correct'] / sm['with_flow']:.0%}", delta_color="off")
             n3.metric(f"Baseline: always {sm['baseline_side']}", f"{sm['baseline_correct']}/{sm['with_flow']} correct",
                       f"{sm['baseline_correct'] / sm['with_flow']:.0%}", delta_color="off")
+            # Display-only conclusion built from replay_summary (no new analytics): within two markets of
+            # the baseline is reported as "no meaningful edge"; larger gaps are stated without a significance claim.
+            crowd_pct = sm["flow_correct"] / sm["with_flow"] * 100
+            base_pct = sm["baseline_correct"] / sm["with_flow"] * 100
+            gap = sm["flow_correct"] - sm["baseline_correct"]
+            verdict = ("no meaningful edge detected" if abs(gap) <= 2 else
+                       f"crowd flow {'ahead of' if gap > 0 else 'behind'} the baseline by {abs(gap)} markets "
+                       "(small sample, not a significance test)")
+            with st.container(border=True):
+                st.markdown(f"**Crowd-only flow: {sm['flow_correct']}/{sm['with_flow']} ({crowd_pct:.1f}%) vs "
+                            f"always-{sm['baseline_side']} baseline: {sm['baseline_correct']}/{sm['with_flow']} "
+                            f"({base_pct:.1f}%) — {verdict}.**")
         k = st.columns(4)
         k[0].metric("Resolved / closed markets", sm["resolved"])
         k[1].metric("With known outcome", sm["with_outcome"])
@@ -328,24 +340,39 @@ with tabs[4]:
             st.warning("No trade tapes stored yet — run `backfill.bat` (or `scripts/backfill_trades.py`).")
         show = rep.copy()
         show["lean"] = show["yes_lean"] * 100
-        show["last_px"] = show["last_implied_yes"] * 100
+        # text column so missing trade-implied prices read "—" instead of "None"
+        show["last_px"] = [f"{x * 100:.0f}%" if pd.notna(x) else "—" for x in show["last_implied_yes"]]
         show["verdict"] = show["flow_correct"].map({True: "✓ called it", False: "✗ wrong"}).fillna("—")
-        st.dataframe(show[["market", "category", "outcome", "directional_trades", "seed_trades", "wallets",
-                           "lean", "last_px", "verdict", "volume_usdc", "replay"]],
+        mm = show["mm_trades"].fillna(0).astype(int) if "mm_trades" in show.columns else 0
+        show["mm_prints"] = mm
+        # short scan-friendly note; the full narrative stays available in the expander below
+        show["note"] = np.where(show["directional_trades"].fillna(0) == 0,
+                                np.where((show["seed_trades"].fillna(0) + mm) > 0, "seeding / market-making only",
+                                         "no trades"), "")
+        st.dataframe(show[["market", "outcome", "verdict", "lean", "last_px", "directional_trades", "wallets",
+                           "seed_trades", "mm_prints", "note", "category", "volume_usdc"]],
                      hide_index=True, width="stretch",
                      column_config={
                          "market": st.column_config.TextColumn("Market", width="large"),
                          "category": "Category", "outcome": "Outcome",
-                         "directional_trades": st.column_config.NumberColumn("Bets", format="%d"),
-                         "seed_trades": st.column_config.NumberColumn("Seed trades", format="%d"),
-                         "wallets": st.column_config.NumberColumn("Wallets", format="%d"),
-                         "lean": st.column_config.ProgressColumn("Flow → YES", min_value=0, max_value=100,
-                                                                 format="%.0f%%"),
-                         "last_px": st.column_config.NumberColumn("Last trade YES", format="%.0f%%"),
                          "verdict": "Flow vs outcome",
+                         "lean": st.column_config.ProgressColumn("Crowd flow → YES", min_value=0, max_value=100,
+                                                                 format="%.0f%%"),
+                         "last_px": st.column_config.TextColumn(
+                             "Last trade YES", help="Trade-implied YES price of the last crowd trade with a USDC amount"),
+                         "directional_trades": st.column_config.NumberColumn("Crowd bets", format="%d"),
+                         "wallets": st.column_config.NumberColumn("Wallets", format="%d"),
+                         "seed_trades": st.column_config.NumberColumn("Seed prints", format="%d"),
+                         "mm_prints": st.column_config.NumberColumn(
+                             "MM prints", format="%d",
+                             help="Prints by wallets that showed market-making behaviour as of the market's close"),
+                         "note": "Note",
                          "volume_usdc": st.column_config.NumberColumn("Volume (USDC)", format="%.2f"),
-                         "replay": st.column_config.TextColumn("Replay", width="large"),
                      })
+        with st.expander("Full replay narrative per market"):
+            st.dataframe(show[["market", "replay"]], hide_index=True, width="stretch",
+                         column_config={"market": st.column_config.TextColumn("Market", width="medium"),
+                                        "replay": st.column_config.TextColumn("Replay", width="large")})
 
 # ------------------------------------------------------------------ Who's trading
 with tabs[5]:
@@ -364,9 +391,20 @@ with tabs[5]:
         pv = profiles.copy()
         pv["share_pct"] = pv["share_of_tape"] * 100
         pv["wallet_short"] = pv["wallet"].str[:6] + ".." + pv["wallet"].str[-4:]
-        st.dataframe(pv[["wallet_short", "role", "trades", "markets", "share_pct", "seed_ratio", "no_ratio", "why", "wallet"]],
+        cols = ["wallet_short", "role", "trades", "markets", "share_pct", "seed_ratio", "no_ratio", "why", "wallet"]
+
+        def _emphasize(row):  # display only: highlight wallets labelled market-making behaviour
+            style = "background-color: rgba(235, 161, 0, 0.16); font-weight: 600" if row["role"] == MM_ROLE else ""
+            return [style] * len(row)
+        if mm_n:
+            top = pv[pv["role"] == MM_ROLE].iloc[0]
+            st.markdown(f"**Dominant wallet:** `{top['wallet']}` — {top['share_of_tape']:.0%} of all shares, "
+                        f"{int(top['markets'])} markets, {top['seed_ratio']:.0%} of its prints are seed pairs "
+                        "(highlighted below).")
+        st.dataframe(pv[cols].style.apply(_emphasize, axis=1),
                      hide_index=True, width="stretch",
-                     column_config={"wallet_short": "Wallet", "role": "Role",
+                     column_config={"wallet_short": "Wallet",
+                                    "role": st.column_config.TextColumn("Role", width="medium"),
                                     "trades": st.column_config.NumberColumn("Prints", format="%d"),
                                     "markets": st.column_config.NumberColumn("Markets", format="%d"),
                                     "share_pct": st.column_config.ProgressColumn("Share of tape", min_value=0,
