@@ -23,8 +23,13 @@ def _save_raw(name: str, ts: datetime, payload) -> None:
 
 
 def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db_path=None,
-                     progress: Callable[[float, str], None] | None = None, save_raw: bool = True) -> dict:
-    """Returns a run summary dict. Raises PantaAPIError only if the market list itself fails."""
+                     progress: Callable[[float, str], None] | None = None, save_raw: bool = True,
+                     all_tapes: bool = False) -> dict:
+    """Returns a run summary dict. Raises PantaAPIError only if the market list itself fails.
+
+    all_tapes=True also fetches the trade tape of every non-enriched market (incl. resolved ones),
+    so the public dataset keeps the full pre-close history needed by Resolved Replay. Without it
+    only open markets' tapes are stored (the cause of the Oct 1-6 public-data gap)."""
     client = client or PantaClient()
     db_path = db_path or client.settings.db_path
     say = progress or (lambda frac, msg: None)
@@ -65,6 +70,12 @@ def collect_snapshot(client: PantaClient | None = None, max_enrich: int = 40, db
                 except PantaAPIError as e:
                     errors.append(str(e))
                 enriched += 1
+            elif all_tapes:
+                try:
+                    raw_tr = client.get_market_trades(m["market_id"], limit=TRADES_LIMIT)
+                    insert_trades(con, run_id, [t for t in (normalize_trade(r, m["market_id"]) for r in raw_tr) if t])
+                except PantaAPIError as e:
+                    errors.append(str(e))
             upsert_market(con, m, ts)
             insert_snapshot(con, run_id, ts, m, activity)
         finish_run(con, run_id, len(markets), enriched, client.calls, errors)

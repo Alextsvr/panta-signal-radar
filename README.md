@@ -1,10 +1,11 @@
 # Panta Signal Radar
 
 **Honest signals for prediction markets.**
-Most dashboards read Panta's trade tape as if every print were a bet. On the live tape, **one market-maker wallet
-holds ~81% of all shares** (YES+NO seed pairs and one-sided liquidity across 68 of 87 markets). Signal Radar
-separates the market maker from the crowd, scores markets on crowd behaviour only, and shows every claim next to
-an honest baseline.
+Most dashboards read Panta's trade tape as if every print were a bet. In the Oct 1 2026 capture of every
+market's tape, **one dominant wallet exhibiting market-making behaviour holds ~81% of all shares** (YES+NO seed
+pairs and one-sided liquidity across 68 of 87 markets). Signal Radar separates that behaviour from the crowd,
+scores markets on crowd trades only, and shows every claim next to an honest baseline. All headline numbers are
+reproducible from this repository: `python scripts/reproduce_analysis.py`.
 
 > Powered by **Panta** · built for the Colosseum Crypto World's Fair and the Panta API Sidetrack · MIT licensed.
 
@@ -76,39 +77,75 @@ re-inflated when history is short, so a first-run score is honestly low. Labels:
 activity/flow both ≥0.3), otherwise the strongest contributor — **MOVER, ACTIVE, SURGE, NEW, CLOSING SOON**, or **QUIET**.
 On the very first snapshot the UI says *"Historical signal data is accumulating."*
 
-## Who's trading — market maker vs crowd
-Each wallet on the tape gets an explainable role. A wallet is a **market maker** when ≥30% of its prints are
-YES+NO seed pairs across ≥5 markets, or when it holds ≥25% of all shares across ≥10 markets. Its prints are
-excluded from crowd activity, crowd flow and the Attention Score.
+## Data integrity rules
+Real Panta API behaviour (observed Oct 1-6 2026) that the analytics explicitly guard against:
+- **Transient degraded rows.** The catalog sometimes returns a market with `yesPrice = null`, `volumeUsdc = "0.00"`,
+  `totalVolumeUsdc = null`, `priceSource = null` (710 of 2,140 stored rows), then valid values again. Such rows are
+  stored verbatim but are never a valuation: they cannot create probability moves, volume flow or outcomes.
+- **Row-consistent selection.** "Latest" and "reference" snapshots are always one physical stored row
+  (`snapshots.latest_rows`); fields from different timestamps are never combined.
+- **Live-to-live movement only.** Δ probability compares two valid, non-outcome valuations in the same price regime
+  (`primary` bonding-curve price vs `secondary` last-trade price). A resolution to 0/1 is an *outcome*, not a ±50pp
+  move; a primary→secondary switch is not counted as movement.
+- **Monotonic volume.** Cumulative volume never falls; a lower newer value is flagged as a data issue, never negative flow.
+- **Raw vs analytical state.** 84 of 91 markets flipped `resolved → secondary_active → resolved` between runs. The raw
+  API state is kept as returned; the analytical state is sticky once a confirmed outcome row
+  (`priceSource = resolved_outcome`) has been seen, so flaps cannot reopen a market or create live signals.
+- **One row per trade.** The append-only trade log repeats a trade in every run that saw it (452 rows = 48 trades on
+  Oct 1-6). All analytics de-duplicate by `trade_id` first; new collector runs only append unseen trades.
+
+## Who's trading — market-making behaviour vs crowd
+Each wallet on the tape gets an explainable *behaviour* label (Panta has not confirmed who owns any wallet). A wallet
+shows **market-making behaviour** when ≥30% of its prints are YES+NO seed pairs across ≥5 markets, or when it holds
+≥25% of all shares across ≥10 markets.
+- **Live radar** uses the current/global wallet profile (all trades known now) to filter today's signals.
+- **Resolved Replay** uses an **as-of-cutoff** profile: for each market, roles and seed pairs are computed only from
+  trades at or before that market's close, so no future behaviour leaks into a historical verdict.
 
 ## Resolved Replay — "did the money see it coming?"
 For every resolved market Signal Radar replays the real Panta trade tape up to the close and compares the
 directional order flow with the actual outcome.
 - **Liquidity seeds are removed**: the same wallet buying YES and NO in near-equal size within seconds is
-  market making, not a bet (128 of 452 trades on 2026-10-01).
+  liquidity provision, not a bet (128 of 452 trades in the Oct 1 capture).
 - **Trade-implied price** = USDC paid ÷ shares received (when the tape carries `amountUsdc`).
 - **Flow lean** = share of directional flow that went to YES (USDC-weighted where available, else shares).
 - **Honest baseline**: every result is shown next to "always guess the more common outcome".
 
-First run on the live catalog (80 resolved markets, 452 trades, 2026-10-01):
+Reproducible result (`python scripts/reproduce_analysis.py`, data branch through 2026-10-06 02:18 UTC +
+committed Oct 1 backfill; 470 unique trades, 88 resolved markets, causal as-of classification):
 
 | Reading | Correct | |
 |---|---|---|
-| Naive tape (seed pairs removed only) | 38 / 61 | 62% — and 12/16 (75%) on markets with ≥5 trades |
-| **Crowd only** (market maker removed) | **27 / 44** | **61%** |
-| Baseline "always NO" on the same markets | 27 / 44 | 61% |
+| Naive tape (seed pairs removed only) | 40 / 64 | 62.5% (baseline "always NO" on the same markets: 40 / 64) |
+| **Crowd only** (as-of market-making wallets removed) | **29 / 47** | **61.7%** |
+| Baseline "always NO" on the crowd-called markets | 28 / 47 | 59.6% |
 
-The apparent edge of the naive reading came from the market maker's systematic NO buying, not from the crowd.
-Honest conclusion today: Panta's crowd flow does not yet beat the base rate — Signal Radar says so instead of
-selling a fake win rate, and keeps measuring as the dataset grows.
+Honest conclusion: neither reading beats the base rate in a meaningful way (one market of difference on 47).
+Signal Radar reports that instead of selling a win rate, and keeps measuring as the dataset grows. An earlier
+local-only figure (12/16 on markets with ≥5 trades) is not part of the reproducible set and is no longer claimed.
+
+## Reproduce the numbers
+```bash
+git fetch origin data
+python scripts/reproduce_analysis.py        # or: --data-dir <checkout of the data branch>
+```
+Inputs, both public: the `data` branch (collector JSONL) and `datasets/panta-trade-backfill-2026-10-01/` — the
+verbatim responses of `GET /markets/{id}/trades/?limit=200` for all 87 catalog markets captured on 2026-10-01
+(sha256 in `manifest.json`; no tape hit the 200-row limit). That capture is the only source of pre-Oct-1 trades:
+the collector originally fetched tapes for open markets only. Since this release it fetches every market's tape
+on each run (`collect_ci.py`, `all_tapes=True`), and `python scripts/backfill_trades.py --export auto` writes a new
+verifiable capture. No API key or local database is needed to reproduce.
 
 ## Screenshots
 _To be added from a live run._
 
 ## 24/7 open dataset
-A GitHub Actions workflow (`.github/workflows/collect.yml`) takes a read-only snapshot every 15 minutes and appends
+A GitHub Actions workflow (`.github/workflows/collect.yml`) requests a read-only snapshot every 15 minutes and appends
 it as JSONL to the `data` branch — an open, growing history of Panta prices, volumes and trades that the API itself
-does not provide. `python scripts/sync_data.py` imports it into the local SQLite.
+does not provide. **Scheduled workflows are best-effort: GitHub may delay or skip them.** Observed Oct 1-6: 24
+successful runs, median gap 4.7 h (min 2.7 h, max 8.9 h), no run with errors. The dashboard shows the actual
+coverage (runs, median and largest gap), and movements are measured only between snapshots that exist.
+`python scripts/sync_data.py` imports the branch into the local SQLite.
 
 ## Run locally (Windows)
 Double-click `setup_and_inspect.bat` once (creates `.venv`, installs deps, inspects the API), then `run_radar.bat`

@@ -36,6 +36,14 @@ def main() -> int:
             by_table[table].extend(git("show", f"FETCH_HEAD:{f}").splitlines())
     added = import_lines(s.db_path, by_table)
     print(f"{len(files)} files -> {s.db_path.name}: added {added}")
+    # committed verbatim trade captures (datasets/panta-trade-backfill-*), idempotent by trade_id
+    from panta_radar.reproduce import DATASETS, backfill_trades
+    from panta_radar.storage import connect, insert_trades
+    for d in sorted(DATASETS.glob("panta-trade-backfill-*")):
+        if (d / "trades_raw.json").exists():
+            with connect(s.db_path) as con:
+                new = insert_trades(con, None, backfill_trades(d))
+            print(f"{d.name}: {new} new trades")
     return 0
 
 

@@ -33,7 +33,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "run.db"
         try:
-            r = collect_snapshot(PantaClient(s), max_enrich=a.max_enrich, db_path=db, save_raw=False)
+            r = collect_snapshot(PantaClient(s), max_enrich=a.max_enrich, db_path=db, save_raw=False,
+                                 all_tapes=True)
         except PantaAPIError as e:
             print(f"API ERROR: {e}")
             return 2

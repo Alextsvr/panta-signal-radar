@@ -83,7 +83,7 @@ Verbatim: `{"id": "c80019f2-…", "marketId": "6yEB…", "wallet": "CzYe…", "i
 - `amountUsdc` is filled on only 18/452 rows (user trades via the app); null for seeding/other flows.
 - `kind`: always `buy` so far; `side`: yes 188 / no 264; `isPrimary`: true 445 / false 7. `feePaid` 0.0 everywhere.
 - Per-market tape: 0–38 rows (limit 200 never hit).
-- Market creators/makers buy YES and NO in near-equal size seconds apart (liquidity seeding).
+- Some wallets buy YES and NO in near-equal size seconds apart across many markets (liquidity-seeding / market-making behaviour; wallet ownership not confirmed by Panta).
 - Detail endpoint adds: `creatorAddress, oracle (source URLs), transactionHash, votes, creationFee, primaryVolume,
   secondaryVolume, tradingFeeAccrued, isGraduated, graduationFailureReason, sentToUma, hermesResponse, programId,
   creatorTwitterHandle, creatorInstagramHandle`, and often a `title` missing from the list row.
@@ -100,3 +100,14 @@ Playground types also allow `kind, side, amountUsdc, amountUsdcBase`.
 - **No liquidity / open-interest / order-book depth** fields.
 - **No trade count field** — derived from the trade tape (≤200 rows per call; counts flagged as lower bounds when capped).
 - Trade rows carry share amounts, not a USDC notional (unless `amountUsdc` appears) → no per-trade price.
+
+## Data-quality behaviour observed Oct 1-6 2026 (public `data` branch, 24 runs) **[verified]**
+- **Degraded catalog rows**: 710 of 2,140 snapshot rows have `yesPrice null`, `volumeUsdc "0.00"`, `totalVolumeUsdc null`,
+  `priceSource null`, `valuationStatus null` (704 with `status: secondary_active`, 6 with `status: open`). The next run
+  usually returns the valid values again. Treated as "no valuation", never as a price/volume change.
+- **State flapping**: 84 of 91 markets alternated `resolved -> secondary_active -> resolved` (raw `phase`/`status`).
+  Outcome rows never conflicted (each market always reported the same 0/1). Analytics keep the outcome sticky.
+- `status` values seen: `resolved`, `secondary_active`, `secondary`, `primary`, `open` (`open` appears for primary markets).
+- Valid live rows always carry `priceSource` `primary_last` (valuationStatus `complete`) or `secondary_last_trade`
+  (`indicative`); outcome rows carry `resolved_outcome` with `yesPrice` exactly 0 or 1.
+- GitHub Actions cadence: scheduled `*/15`, executed median every 4.7 h (min 2.7 h, max 8.9 h).

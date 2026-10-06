@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
+from .snapshots import latest_rows, market_states, movement_frame, prepare_snapshots
+
 OPEN_PHASES = ("primary", "secondary")
 
 
@@ -55,23 +57,6 @@ def _num(x) -> float:
     return f
 
 
-def latest_and_reference(snaps: pd.DataFrame, window_h: float) -> pd.DataFrame:
-    """For each market: latest snapshot + the oldest snapshot inside the window before it."""
-    cols = ["market_id", "snapshot_ts", "yes_price", "volume_usdc"]
-    if snaps is None or snaps.empty:
-        return pd.DataFrame(columns=["market_id", "ref_ts", "ref_yes_price", "ref_volume_usdc", "n_snapshots"])
-    s = snaps.copy()
-    s["snapshot_ts"] = _ts(s["snapshot_ts"])
-    s = s.dropna(subset=["snapshot_ts"]).sort_values("snapshot_ts")
-    latest_ts = s.groupby("market_id")["snapshot_ts"].transform("max")
-    in_window = (s["snapshot_ts"] < latest_ts) & (s["snapshot_ts"] >= latest_ts - pd.Timedelta(hours=window_h))
-    ref = (s[in_window].groupby("market_id", as_index=False).first()[cols]
-           .rename(columns={"snapshot_ts": "ref_ts", "yes_price": "ref_yes_price",
-                            "volume_usdc": "ref_volume_usdc"}))
-    n = s.groupby("market_id").size().rename("n_snapshots").reset_index()
-    return n.merge(ref, on="market_id", how="left")
-
-
 def _clip01(x: float) -> float:
     return 0.0 if (x is None or math.isnan(x)) else max(0.0, min(1.0, x))
 
@@ -97,17 +82,23 @@ def fmt_dur(h: float) -> str:
 def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
     """Pure function: one market row -> components, score, label, reasons."""
     reasons: list[str] = []
-    is_open = r.get("phase") in OPEN_PHASES and not bool(r.get("resolved"))
+    if "analytical_state" in r:
+        # stable state from snapshots.market_states(): transient raw flips cannot reopen a resolved market
+        is_open = r.get("analytical_state") in OPEN_PHASES
+    else:  # plain row (unit tests / legacy callers)
+        is_open = r.get("phase") in OPEN_PHASES and not bool(r.get("resolved"))
 
-    # --- movement (needs ≥2 snapshots with prices)
+    # --- movement: live-to-live only (see snapshots.movement_frame). A resolution (0/1) is an
+    # outcome, not a repricing, so closed/resolved markets never get a movement component.
     dpp = math.nan
-    yes, ref_yes = _num(r.get("yes_price")), _num(r.get("ref_yes_price"))
+    yes = _num(r["live_yes_price"]) if "live_yes_price" in r else _num(r.get("yes_price"))
+    ref_yes = _num(r.get("ref_yes_price"))
     obs_h = math.nan
     ref_ts = r.get("ref_ts")
-    snap_ts = r.get("snapshot_ts")
+    snap_ts = r.get("live_ts") if "live_ts" in r else r.get("snapshot_ts")
     if ref_ts is not None and snap_ts is not None and not pd.isna(ref_ts) and not pd.isna(snap_ts):
         obs_h = (pd.Timestamp(snap_ts) - pd.Timestamp(ref_ts)).total_seconds() / 3600
-    if not math.isnan(yes) and not math.isnan(ref_yes):
+    if is_open and not math.isnan(yes) and not math.isnan(ref_yes):
         dpp = (yes - ref_yes) * 100
     c_move = _clip01(abs(dpp) / cfg.move_full_pp) if not math.isnan(dpp) else 0.0
     if not math.isnan(dpp) and abs(dpp) >= 0.5:
@@ -115,8 +106,13 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
                        f"({ref_yes * 100:.0f}% → {yes * 100:.0f}%) over {fmt_dur(obs_h)}")
 
     # --- volume flow (needs ≥2 snapshots)
-    vol, ref_vol = _num(r.get("volume_usdc")), _num(r.get("ref_volume_usdc"))
-    dvol = vol - ref_vol if not (math.isnan(vol) or math.isnan(ref_vol)) else math.nan
+    vol = _num(r["live_volume_usdc"]) if "live_volume_usdc" in r else _num(r.get("volume_usdc"))
+    ref_vol = _num(r.get("ref_volume_usdc"))
+    dvol = vol - ref_vol if (is_open and not (math.isnan(vol) or math.isnan(ref_vol))) else math.nan
+    if not math.isnan(dvol) and dvol < -1e-9:
+        # cumulative volume cannot fall; a lower newer value is an API data issue, never negative flow
+        dvol = math.nan
+        reasons.append("volume data regression ignored")
     vol_growth = (dvol / ref_vol) if (not math.isnan(dvol) and ref_vol > 0) else math.nan
     c_flow = _log_scale(dvol, cfg.flow_full_usdc)
     if not math.isnan(dvol) and dvol > 0:
@@ -155,12 +151,12 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
         reasons.append(f"Closing soon: ends in {fmt_dur(left_h)}")
     mm24 = _num(r.get("mm_prints_24h"))
     if is_open and not math.isnan(mm24) and mm24 > 0:
-        reasons.append(f"{int(mm24)} market-maker prints ignored")
+        reasons.append(f"{int(mm24)} market-making-like prints ignored")
     if is_open and (math.isnan(t24) or t24 == 0):
         lt = r.get("last_trade_at")
         if lt is not None and not pd.isna(lt):
             reasons.append(f"Last trade {fmt_dur((now - pd.Timestamp(lt)).total_seconds() / 3600)} ago")
-    if is_open and r.get("valuation_status") == "indicative":
+    if is_open and r.get("live_valuation_status", r.get("valuation_status")) == "indicative":
         reasons.append("price is indicative (last secondary trade)")
 
     comps = {"c_move": c_move, "c_activity": c_act, "c_flow": c_flow, "c_accel": c_accel, "c_timing": c_timing}
@@ -173,7 +169,11 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
                "SURGE": cfg.w_accel * c_accel,
                "CLOSING SOON" if closing else "NEW": cfg.w_timing * c_timing}
     if not is_open:
-        label = "RESOLVED" if r.get("phase") == "resolved" or r.get("resolved") else (r.get("phase") or "—").upper()
+        st = r.get("analytical_state")
+        if st in ("resolved", "closed"):
+            label = st.upper()
+        else:
+            label = "RESOLVED" if r.get("phase") == "resolved" or r.get("resolved") else (r.get("phase") or "—").upper()
     elif c_move >= 0.3 and (c_act >= 0.3 or c_flow >= 0.3):
         label = "TRENDING"
     elif max(contrib.values()) <= 0:
@@ -194,7 +194,7 @@ def score_row(r: dict, now: datetime, cfg: ScoreConfig = DEFAULT) -> dict:
 
 
 def crowd_activity(trades: pd.DataFrame, now: datetime) -> pd.DataFrame:
-    """Per-market activity counted on CROWD trades only (no seed pairs, no market-maker wallets)."""
+    """Per-market activity counted on CROWD trades only (no seed pairs, no wallets with market-making behaviour)."""
     from .replay import prepare_trades, tag_crowd  # local import keeps signals importable standalone
     cols = ["market_id", "trades_24h", "trades_1h", "wallets_24h", "last_trade_at", "crowd_yes_share_24h",
             "tape_trades_24h", "mm_prints_24h"]
@@ -221,17 +221,43 @@ def crowd_activity(trades: pd.DataFrame, now: datetime) -> pd.DataFrame:
 
 def build_radar(markets: pd.DataFrame, snaps: pd.DataFrame, now: datetime | None = None,
                 cfg: ScoreConfig = DEFAULT, trades: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Join catalog + latest snapshot + reference snapshot, score every market, rank.
-    With `trades`, activity is recomputed on crowd trades only (market makers and seeds excluded)."""
+    """Score every market from row-consistent snapshot selections (see snapshots.py).
+
+    Columns per market:
+      raw_phase / raw_status / raw_snapshot_ts  - latest physical API row, verbatim
+      analytical_state                          - stable state (resolution is sticky)
+      phase                                     - = analytical_state (what the UI filters on)
+      live_* / ref_*                            - latest live valuation row and its same-regime reference
+      yes_price / volume_usdc                   - display values: outcome (0/1) for resolved markets,
+                                                  else the latest VALID valuation row; never mixed
+    With `trades`, activity is recomputed on crowd trades only (seed pairs and wallets with
+    market-making behaviour excluded, using the current/global wallet profile).
+    """
     now = now or datetime.now(timezone.utc)
     if markets is None or markets.empty or snaps is None or snaps.empty:
         return pd.DataFrame()
-    s = snaps.copy()
-    s["snapshot_ts"] = _ts(s["snapshot_ts"])
-    latest = s.sort_values("snapshot_ts").groupby("market_id", as_index=False).last()
+    s = prepare_snapshots(snaps)
+    states = market_states(s, markets)
+    moves = movement_frame(s, cfg.window_h)
+    valid = latest_rows(s, s["valid_valuation"])[["market_id", "snapshot_ts", "yes_price", "volume_usdc",
+                                                    "total_volume_usdc"]] \
+        .rename(columns={"snapshot_ts": "valuation_ts", "yes_price": "valid_yes_price",
+                         "volume_usdc": "volume_usdc", "total_volume_usdc": "total_volume_usdc"}) \
+        if "total_volume_usdc" in s.columns else \
+        latest_rows(s, s["valid_valuation"])[["market_id", "snapshot_ts", "yes_price", "volume_usdc"]] \
+        .rename(columns={"snapshot_ts": "valuation_ts", "yes_price": "valid_yes_price"})
+    act_cols = [c for c in ("trades_sampled", "trades_1h", "trades_24h", "shares_24h", "fees_24h", "wallets_24h",
+                            "last_trade_at", "tape_capped") if c in s.columns]
+    enriched = s[s["enriched"].fillna(0).astype(int) == 1] if "enriched" in s.columns else s
+    activity = latest_rows(enriched)[["market_id"] + act_cols]
     m = markets.drop(columns=[c for c in ("phase", "status") if c in markets.columns])
-    df = latest.merge(m, on="market_id", how="left").merge(
-        latest_and_reference(snaps, cfg.window_h), on="market_id", how="left")
+    df = (states.merge(moves, on="market_id", how="left").merge(valid, on="market_id", how="left")
+          .merge(activity, on="market_id", how="left").merge(m, on="market_id", how="left"))
+    df["phase"] = df["analytical_state"]
+    df["snapshot_ts"] = df["raw_snapshot_ts"]
+    resolved = df["analytical_state"] == "resolved"
+    df["yes_price"] = np.where(resolved, df["outcome_value"],
+                               df["live_yes_price"].where(df["live_yes_price"].notna(), df["valid_yes_price"]))
     if trades is not None and not trades.empty:
         act = crowd_activity(trades, now)
         df = df.drop(columns=[c for c in act.columns if c != "market_id" and c in df.columns]) \
@@ -239,11 +265,12 @@ def build_radar(markets: pd.DataFrame, snaps: pd.DataFrame, now: datetime | None
         for c in ("trades_24h", "trades_1h", "wallets_24h", "tape_trades_24h", "mm_prints_24h"):
             df[c] = df[c].fillna(0)
         df["tape_capped"] = False
-    for c in ("start_time", "end_time", "resolution_time", "ref_ts", "last_trade_at", "first_seen_at"):
+    for c in ("start_time", "end_time", "resolution_time", "ref_ts", "live_ts", "last_trade_at", "first_seen_at",
+              "valuation_ts", "resolved_at"):
         if c in df.columns:
             df[c] = _ts(df[c])
     scored = pd.DataFrame([score_row(r, now, cfg) for r in df.to_dict("records")], index=df.index)
     out = pd.concat([df, scored], axis=1)
-    out["rank_key"] = out["attention_score"].fillna(-1)
+    out["rank_key"] = pd.to_numeric(out["attention_score"], errors="coerce").fillna(-1)
     return out.sort_values(["rank_key", "volume_usdc"], ascending=[False, False]).drop(columns="rank_key") \
               .reset_index(drop=True)

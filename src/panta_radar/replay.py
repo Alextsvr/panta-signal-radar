@@ -4,7 +4,8 @@ Resolved Replay ("did the money see the outcome coming?").
 Everything here is derived from real Panta trade rows. Observed live (2026-10-01):
   * yesAmount / noAmount are share quantities in 1e6 base units
   * amountUsdc is present on user trades; seeding trades have none
-  * market creators / market makers buy YES and NO in near-equal size seconds apart
+  * some wallets buy YES and NO in near-equal size seconds apart across many markets
+    (market-making / liquidity-seeding behaviour; the wallet owner is not confirmed by Panta)
     -> that is liquidity provision, not a directional bet, and is excluded from flow
 """
 from __future__ import annotations
@@ -18,12 +19,21 @@ SEED_WINDOW_S = 10      # opposite-side buy by the same wallet within 10 s ...
 SEED_SIZE_TOL = 0.02    # ... and within 2 % share size => liquidity seed
 
 
+def dedupe_trades(trades: pd.DataFrame) -> pd.DataFrame:
+    """One row per `trade_id`. The JSONL datastore is append-only, so the same trade is re-exported
+    by every collection run that sees it (452 rows = 48 unique trades on Oct 1-6). Every analytic
+    (wallet profiles, seed detection, activity, Replay) must run on de-duplicated trades."""
+    if trades is None or trades.empty or "trade_id" not in trades.columns:
+        return trades
+    return trades.drop_duplicates("trade_id", keep="last").reset_index(drop=True)
+
+
 def prepare_trades(trades: pd.DataFrame) -> pd.DataFrame:
-    """Typed copy with `is_seed`, `implied_yes` (trade-implied YES price) and `direction`."""
+    """De-duplicated, typed copy with `is_seed`, `implied_yes` (trade-implied YES price) and `direction`."""
     if trades is None or trades.empty:
         return pd.DataFrame(columns=["market_id", "wallet", "block_time", "side", "shares", "usdc_amount",
                                      "is_seed", "implied_yes", "direction"])
-    t = trades.copy()
+    t = dedupe_trades(trades).copy()
     t["block_time"] = pd.to_datetime(t["block_time"], utc=True, errors="coerce")
     for c in ("yes_amount", "no_amount", "shares", "usdc_amount"):
         t[c] = pd.to_numeric(t[c], errors="coerce")
@@ -51,13 +61,14 @@ def prepare_trades(trades: pd.DataFrame) -> pd.DataFrame:
     return t.sort_values(["market_id", "block_time"]).reset_index(drop=True)
 
 
+MM_ROLE = "market-making behaviour"  # a behaviour label, not a claim about who owns the wallet
 MM_MIN_MARKETS = 5        # a liquidity wallet works across many markets ...
 MM_MIN_SEED_RATIO = 0.30  # ... and a large share of its prints are YES+NO seed pairs
 MM_MIN_SHARE = 0.25       # or it alone holds >25% of all shares on the tape (with >=10 markets)
 
 
 def wallet_profiles(t: pd.DataFrame) -> pd.DataFrame:
-    """Per-wallet footprint on the tape and an explainable role: market maker vs crowd."""
+    """Per-wallet footprint on the tape and an explainable role: market-making behaviour vs crowd."""
     if t is None or t.empty:
         return pd.DataFrame(columns=["wallet", "trades", "markets", "shares", "share_of_tape", "seed_ratio",
                                      "usdc_ratio", "no_ratio", "role", "why"])
@@ -75,21 +86,21 @@ def wallet_profiles(t: pd.DataFrame) -> pd.DataFrame:
             why.append(f"{r.seed_ratio:.0%} of its {r.trades} prints are YES+NO seed pairs across {r.markets} markets")
         if r.share_of_tape >= MM_MIN_SHARE and r.markets >= 10:
             why.append(f"holds {r.share_of_tape:.0%} of all shares on the tape")
-        roles.append("market maker" if why else "crowd")
+        roles.append(MM_ROLE if why else "crowd")
         whys.append("; ".join(why))
     w["role"], w["why"] = roles, whys
     return w.reset_index().sort_values("shares", ascending=False).reset_index(drop=True)
 
 
 def tag_crowd(t: pd.DataFrame, profiles: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Adds `is_mm` (wallet classified as market maker) and `is_crowd` (directional, not seed, not MM)."""
+    """Adds `is_mm` (wallet shows market-making behaviour) and `is_crowd` (directional, not seed, not MM)."""
     t = t.copy()
     if t.empty:
         t["is_mm"] = pd.Series(dtype=bool)
         t["is_crowd"] = pd.Series(dtype=bool)
         return t
     profiles = wallet_profiles(t) if profiles is None else profiles
-    mm = set(profiles.loc[profiles["role"] == "market maker", "wallet"])
+    mm = set(profiles.loc[profiles["role"] == MM_ROLE, "wallet"])
     t["is_mm"] = t["wallet"].isin(mm)
     t["is_crowd"] = ~t["is_mm"] & ~t["is_seed"] & t["direction"].notna()
     return t
@@ -109,7 +120,7 @@ def outcome_from_price(yes_price) -> str | None:
 def replay_market(trades: pd.DataFrame, outcome: str | None, end_time=None, crowd_only: bool = False) -> dict:
     """Directional flow before close vs the actual outcome for one market.
     crowd_only=False reproduces a naive tape reading (only seed pairs removed);
-    crowd_only=True also drops every trade by wallets classified as market makers."""
+    crowd_only=True also drops every trade by wallets showing market-making behaviour."""
     t = trades
     if end_time is not None and not pd.isna(end_time):
         t = t[t["block_time"] <= pd.Timestamp(end_time)]
@@ -141,11 +152,11 @@ def replay_market(trades: pd.DataFrame, outcome: str | None, end_time=None, crow
 
 def explain_replay(r: dict, outcome: str | None) -> str:
     if r["directional_trades"] == 0:
-        return ("Only market-maker / seeding prints — no crowd bets before close"
+        return ("Only market-making-like / seeding prints — no crowd bets before close"
                 if (r["seed_trades"] or r.get("mm_trades")) else "No trades on the tape")
     parts = [f"{r['directional_trades']} crowd trades from {r['wallets']} wallets"]
     if r.get("mm_trades"):
-        parts.append(f"{r['mm_trades']} market-maker prints excluded")
+        parts.append(f"{r['mm_trades']} market-making-like prints excluded")
     if not math.isnan(r["yes_lean"]):
         parts.append(f"{r['yes_lean'] * 100:.0f}% of {r['flow_basis']} flow went to YES")
     if not math.isnan(r["last_implied_yes"]):
@@ -156,26 +167,66 @@ def explain_replay(r: dict, outcome: str | None) -> str:
     return " · ".join(parts)
 
 
+def _cutoff(r: dict):
+    """Information cutoff for a resolved market: trading close (end_time), else resolution time,
+    else the first snapshot that showed the outcome."""
+    for k in ("end_time", "resolution_time", "resolved_at"):
+        v = r.get(k)
+        if v is not None and not pd.isna(v):
+            return pd.Timestamp(v)
+    return None
+
+
 def build_replay(radar: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
-    """One row per resolved market (from the radar frame) with its replay."""
+    """One row per resolved/closed market with a CAUSAL replay.
+
+    For each market, with cutoff = its close:
+        trades with block_time <= cutoff (all markets)
+          -> seed pairs + wallet profiles as of cutoff
+          -> wallets with market-making behaviour as of cutoff
+          -> the target market's flow before close, those wallets and seed pairs excluded
+    No trade after the cutoff can influence either the flow or the wallet classification.
+    (The current/global profile in `wallet_profiles(all trades)` is only for the live view.)
+    """
     if radar is None or radar.empty:
         return pd.DataFrame()
-    res = radar[(radar["phase"] == "resolved") | (radar["resolved"].fillna(False).astype(bool)
-                                                   & ~radar["is_open"])].copy()
+    if "analytical_state" in radar.columns:
+        res = radar[radar["analytical_state"].isin(["resolved", "closed"])].copy()
+    else:
+        res = radar[(radar["phase"] == "resolved") | (radar["resolved"].fillna(False).astype(bool)
+                                                       & ~radar["is_open"])].copy()
     if res.empty:
         return pd.DataFrame()
-    t = tag_crowd(prepare_trades(trades))
+    raw = dedupe_trades(trades) if trades is not None else pd.DataFrame()
+    if raw is not None and not raw.empty:
+        raw = raw.copy()
+        raw["block_time"] = pd.to_datetime(raw["block_time"], utc=True, errors="coerce")
+    cache: dict = {}
     rows = []
     for r in res.to_dict("records"):
-        outcome = outcome_from_price(r.get("yes_price")) if r.get("phase") == "resolved" else None
-        mt = t[t["market_id"] == r["market_id"]]
-        naive = replay_market(mt, outcome, r.get("end_time"), crowd_only=False)
-        rp = replay_market(mt, outcome, r.get("end_time"), crowd_only=True)
-        rows.append({"market_id": r["market_id"], "outcome": outcome, **rp,
-                     "naive_lean": naive["yes_lean"], "naive_correct": naive["flow_correct"],
-                     "naive_trades": naive["directional_trades"],
-                     "replay": explain_replay(rp, outcome)})
-    out = res.merge(pd.DataFrame(rows), on="market_id", how="left")
+        if "outcome" in r and (r.get("outcome") in ("YES", "NO") or "analytical_state" in r):
+            outcome = r.get("outcome") if r.get("outcome") in ("YES", "NO") else None
+        else:
+            outcome = outcome_from_price(r.get("yes_price")) if r.get("phase") == "resolved" else None
+        cut = _cutoff(r)
+        if raw is None or raw.empty:
+            tagged, mm_n = tag_crowd(prepare_trades(pd.DataFrame())), 0
+        else:
+            key = cut
+            if key not in cache:
+                asof = raw if cut is None else raw[raw["block_time"] <= cut]
+                prepared = prepare_trades(asof)
+                prof = wallet_profiles(prepared)
+                cache[key] = (tag_crowd(prepared, prof), int((prof["role"] == MM_ROLE).sum()))
+            tagged, mm_n = cache[key]
+        mt = tagged[tagged["market_id"] == r["market_id"]] if len(tagged) else tagged
+        naive = replay_market(mt, outcome, cut, crowd_only=False)
+        rp = replay_market(mt, outcome, cut, crowd_only=True)
+        rows.append({"market_id": r["market_id"], "outcome": outcome, "cutoff": cut, "mm_wallets_asof": mm_n,
+                     **rp, "naive_lean": naive["yes_lean"], "naive_correct": naive["flow_correct"],
+                     "naive_trades": naive["directional_trades"], "replay": explain_replay(rp, outcome)})
+    out = res.drop(columns=[c for c in ("outcome",) if c in res.columns]).merge(pd.DataFrame(rows), on="market_id",
+                                                                                 how="left")
     return out.sort_values(["directional_trades", "volume_usdc"], ascending=False).reset_index(drop=True)
 
 

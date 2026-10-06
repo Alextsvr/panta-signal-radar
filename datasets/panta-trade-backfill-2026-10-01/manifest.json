@@ -1,0 +1,16 @@
+{
+  "name": "panta-trade-backfill-2026-10-01",
+  "description": "Verbatim responses of GET /api/v1/markets/{marketId}/trades/?limit=200 for every market in the Panta catalog, captured by scripts/backfill_trades.py. Stored as {marketId: [trade rows]} exactly as returned (pk_live_ key, read-only).",
+  "source": "https://live-api.panta.market/api/v1/markets/{marketId}/trades/?limit=200",
+  "fetched_at_utc": "2026-10-01T10:08:59Z (run started) .. 2026-10-01T10:12Z",
+  "markets": 87,
+  "markets_with_trades": 77,
+  "rows": 452,
+  "unique_trade_ids": 452,
+  "block_time_min": "2026-08-06T10:17:52+00:00",
+  "block_time_max": "2026-09-30T14:35:38+00:00",
+  "max_rows_per_market": 38,
+  "note": "No market hit the 200-row limit, so each tape is complete as served on that date.",
+  "sha256": "000cc4e870f69efbcafd948269a9ca2b36991f117721e414c012a71025b21b05",
+  "bytes": 238030
+}

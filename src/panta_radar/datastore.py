@@ -24,14 +24,30 @@ def _rows(con: sqlite3.Connection, table: str) -> list[dict]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def export_db(db_path: Path, out_dir: Path) -> dict[str, int]:
-    """Append every row of a (single-run) SQLite DB to dated JSONL files."""
+def known_trade_ids(out_dir: Path) -> set[str]:
+    ids = set()
+    for f in sorted((Path(out_dir) / "trades").glob("*.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                ids.add(json.loads(line)["trade_id"])
+    return ids
+
+
+def export_db(db_path: Path, out_dir: Path, skip_known_trades: bool = True) -> dict[str, int]:
+    """Append every row of a (single-run) SQLite DB to dated JSONL files.
+
+    Trades already present anywhere in the datastore (same `trade_id`) are not re-exported, so the
+    trade log stays one row per trade. Older files may still contain repeats (Oct 1-6 runs exported
+    every tape again); readers must de-duplicate by `trade_id` regardless."""
     counts = {}
+    known = known_trade_ids(out_dir) if skip_known_trades else set()
     with connect(db_path) as con:
         runs = _rows(con, "runs")
         day = (runs[-1]["started_at"] if runs else "unknown")[:10]
         for table in TABLES:
             rows = _rows(con, table)
+            if table == "trades" and known:
+                rows = [r for r in rows if r["trade_id"] not in known]
             counts[table] = len(rows)
             if not rows:
                 continue
@@ -85,3 +101,10 @@ def import_lines(db_path, files: dict[str, Iterable[str]]) -> dict[str, int]:
                 [m.get(c) for c in MARKET_COLS] + [m.get("first_seen_at"), m.get("last_seen_at")])
             added["markets"] += 1
     return dict(added)
+
+
+def read_dir(data_dir: Path) -> dict[str, list[str]]:
+    """JSONL lines per table from a checkout of the `data` branch."""
+    d = Path(data_dir)
+    return {t: [l for f in sorted((d / t).glob("*.jsonl")) for l in f.read_text(encoding="utf-8").splitlines()]
+            for t in TABLES}

@@ -23,9 +23,31 @@ from panta_radar.normalize import display_title, normalize_market, normalize_mar
 from panta_radar.storage import connect, insert_trades, upsert_market  # noqa: E402
 
 
+def export_dataset(out: Path, raw_trades: dict, ts: datetime) -> None:
+    """Verbatim `{marketId: [rows]}` + manifest with sha256, so others can verify the capture."""
+    import hashlib
+    out.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(raw_trades, ensure_ascii=False).encode("utf-8")
+    (out / "trades_raw.json").write_bytes(body)
+    rows = [t for v in raw_trades.values() for t in v]
+    bts = [t.get("blockTime") for t in rows if t.get("blockTime")]
+    iso = lambda x: datetime.fromtimestamp(x, timezone.utc).isoformat()
+    manifest = {"name": out.name, "source": "GET /api/v1/markets/{marketId}/trades/?limit=200",
+                "fetched_at_utc": ts.isoformat(), "markets": len(raw_trades),
+                "markets_with_trades": sum(1 for v in raw_trades.values() if v), "rows": len(rows),
+                "unique_trade_ids": len({t.get("id") for t in rows}),
+                "block_time_min": iso(min(bts)) if bts else None, "block_time_max": iso(max(bts)) if bts else None,
+                "max_rows_per_market": max((len(v) for v in raw_trades.values()), default=0),
+                "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"exported {len(rows)} rows to {out}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-detail", action="store_true", help="skip GET /markets/{id}/")
+    ap.add_argument("--export", metavar="DIR", help="also write a verbatim, committable dataset "
+                    "(trades_raw.json + manifest.json) to DIR, e.g. datasets/panta-trade-backfill-YYYY-MM-DD")
     a = ap.parse_args()
     s = load_settings()
     print(f"key {s.masked_key} -> {s.base_url}  db={s.db_path.name}")
@@ -65,6 +87,10 @@ def main() -> int:
     (RAW_DIR / f"{stamp}_backfill_trades.json").write_text(json.dumps(raw_trades), encoding="utf-8")
     if raw_details:
         (RAW_DIR / f"{stamp}_backfill_details.json").write_text(json.dumps(raw_details), encoding="utf-8")
+    if a.export:
+        out = Path(a.export) if a.export != "auto" else \
+            Path(__file__).resolve().parents[1] / "datasets" / f"panta-trade-backfill-{ts:%Y-%m-%d}"
+        export_dataset(out, raw_trades, ts)
     print(f"done: api_calls={c.calls} new_trades={new_total} errors={len(errors)}")
     return 0 if not errors else 1
 
