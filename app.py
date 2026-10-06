@@ -308,18 +308,15 @@ with tabs[4]:
                       f"{sm['flow_correct'] / sm['with_flow']:.0%}", delta_color="off")
             n3.metric(f"Baseline: always {sm['baseline_side']}", f"{sm['baseline_correct']}/{sm['with_flow']} correct",
                       f"{sm['baseline_correct'] / sm['with_flow']:.0%}", delta_color="off")
-            # Display-only conclusion built from replay_summary (no new analytics): within two markets of
-            # the baseline is reported as "no meaningful edge"; larger gaps are stated without a significance claim.
+            # Display-only conclusion built from replay_summary: plain differences, no significance label
             crowd_pct = sm["flow_correct"] / sm["with_flow"] * 100
             base_pct = sm["baseline_correct"] / sm["with_flow"] * 100
             gap = sm["flow_correct"] - sm["baseline_correct"]
-            verdict = ("no meaningful edge detected" if abs(gap) <= 2 else
-                       f"crowd flow {'ahead of' if gap > 0 else 'behind'} the baseline by {abs(gap)} markets "
-                       "(small sample, not a significance test)")
+            gap_txt = f"{gap:+d} market{'s' if abs(gap) != 1 else ''} ({crowd_pct - base_pct:+.1f} pp)"
             with st.container(border=True):
                 st.markdown(f"**Crowd-only flow: {sm['flow_correct']}/{sm['with_flow']} ({crowd_pct:.1f}%) vs "
                             f"always-{sm['baseline_side']} baseline: {sm['baseline_correct']}/{sm['with_flow']} "
-                            f"({base_pct:.1f}%) — {verdict}.**")
+                            f"({base_pct:.1f}%) — {gap_txt}.** Small sample; no significance test.")
         k = st.columns(4)
         k[0].metric("Resolved / closed markets", sm["resolved"])
         k[1].metric("With known outcome", sm["with_outcome"])
