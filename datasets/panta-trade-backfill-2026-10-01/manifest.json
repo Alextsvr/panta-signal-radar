@@ -12,5 +12,13 @@
   "max_rows_per_market": 38,
   "note": "No market hit the 200-row limit, so each tape is complete as served on that date.",
   "sha256": "000cc4e870f69efbcafd948269a9ca2b36991f117721e414c012a71025b21b05",
-  "bytes": 238030
+  "bytes": 238030,
+  "reverification": {
+    "fetched_at_utc": "2026-10-06T08:22:56Z",
+    "markets": 91,
+    "rows": 473,
+    "unique_trade_ids": 473,
+    "result": "All 452 trade ids of this capture were returned again with byte-identical field values; the 21 extra ids are trades executed 2026-10-01T19:03Z..2026-10-05T18:35Z (after this capture). The API still serves historical tapes of resolved markets.",
+    "note": "The re-capture itself is not committed: the collector now fetches every market's tape on each run, so the newer trades enter the public data branch on its own."
+  }
 }

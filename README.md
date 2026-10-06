@@ -111,8 +111,9 @@ directional order flow with the actual outcome.
 - **Flow lean** = share of directional flow that went to YES (USDC-weighted where available, else shares).
 - **Honest baseline**: every result is shown next to "always guess the more common outcome".
 
-Reproducible result (`python scripts/reproduce_analysis.py`, data branch through 2026-10-06 02:18 UTC +
-committed Oct 1 backfill; 470 unique trades, 88 resolved markets, causal as-of classification):
+Reproducible result (data branch commit `432a14a` = snapshots through 2026-10-06 02:18 UTC, plus the committed
+Oct 1 backfill; 470 unique trades, 88 resolved markets, causal as-of classification):
+`python scripts/reproduce_analysis.py --ref 432a14a0c6a88fb90a70594ade9ad83b7852345f`
 
 | Reading | Correct | |
 |---|---|---|
@@ -121,6 +122,9 @@ committed Oct 1 backfill; 470 unique trades, 88 resolved markets, causal as-of c
 | Baseline "always NO" on the crowd-called markets | 28 / 47 | 59.6% |
 
 Honest conclusion: neither reading beats the base rate in a meaningful way (one market of difference on 47).
+A fresh capture of every tape on 2026-10-06 08:22 UTC returned all 452 Oct 1 trades unchanged plus 21 newer ones;
+with it the numbers become naive 41/65, crowd 30/48, baseline 29/48 — the same conclusion. Numbers computed on the
+latest data branch will keep moving as the collector adds markets.
 Signal Radar reports that instead of selling a win rate, and keeps measuring as the dataset grows. An earlier
 local-only figure (12/16 on markets with ≥5 trades) is not part of the reproducible set and is no longer claimed.
 

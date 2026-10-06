@@ -111,3 +111,11 @@ Playground types also allow `kind, side, amountUsdc, amountUsdcBase`.
 - Valid live rows always carry `priceSource` `primary_last` (valuationStatus `complete`) or `secondary_last_trade`
   (`indicative`); outcome rows carry `resolved_outcome` with `yesPrice` exactly 0 or 1.
 - GitHub Actions cadence: scheduled `*/15`, executed median every 4.7 h (min 2.7 h, max 8.9 h).
+- **Catalog vs detail disagree on lifecycle** (re-capture 2026-10-06 08:22 UTC): `GET /markets/` listed all 91 rows as
+  `secondary`, while `GET /markets/{id}/` returned 70 `resolved`, 17 `secondary_active`, 3 `secondary`, 1 `primary`.
+  Neither raw field is a reliable lifecycle state on its own; analytics use the sticky outcome rule.
+- **Markets can open and resolve between two collector runs**: "Will it rain anywhere in London before 9pm BST on
+  October 5th" was first seen already resolved (runs at 15:09 and 22:01 UTC, 6.9 h apart), so the open-markets-only
+  collector never fetched its 3 trades. Fixed by fetching every market's tape on each run (`all_tapes=True`).
+- **Historical tapes are still served**: the 2026-10-06 re-capture returned every trade id of the Oct 1 capture with
+  identical fields (452/452).
