@@ -4,3 +4,4 @@
 {"run_id":1,"started_at":"2026-10-25T16:22:11.205939+00:00","finished_at":"2026-10-25T16:23:27.967160+00:00","markets_seen":109,"markets_enriched":9,"api_calls":121,"errors":null}
 {"run_id":1,"started_at":"2026-10-25T19:11:06.863723+00:00","finished_at":"2026-10-25T19:12:21.027014+00:00","markets_seen":110,"markets_enriched":9,"api_calls":122,"errors":null}
 {"run_id":1,"started_at":"2026-10-25T21:48:52.239671+00:00","finished_at":"2026-10-25T21:50:07.211160+00:00","markets_seen":111,"markets_enriched":9,"api_calls":123,"errors":null}
+{"run_id":1,"started_at":"2026-10-25T23:54:51.292940+00:00","finished_at":"2026-10-25T23:56:03.948218+00:00","markets_seen":111,"markets_enriched":6,"api_calls":120,"errors":null}
